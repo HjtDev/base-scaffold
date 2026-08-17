@@ -1,0 +1,53 @@
+# CLAUDE.md — base-scaffold (the template itself)
+
+This repo is a one-time starter kit, not a running project: projects clone it, delete .git,
+and own the result. There is no upstream pull, so a mistake here propagates into every future
+project and has to be fixed N times. Bias hard toward correctness over speed.
+
+## The spec
+`docs/BASE-DESIGN.md` is authoritative for everything in this repo. Read the relevant section
+before implementing — do not infer structure from convention or memory. `docs/APP-DESIGN.md`
+and `docs/INTEGRATION-GUIDE.md` describe what will be installed into this scaffold later;
+consult them whenever a decision here constrains them.
+
+When this repo and the spec disagree, the spec wins — unless you believe the spec is wrong,
+in which case **stop and say so** rather than silently implementing something better.
+
+## Pinned versions & defaults
+
+These are the concrete decisions behind this scaffold — cite this table instead of
+re-deriving a version from `BASE-DESIGN.md` prose. Changing one is a real decision;
+update it here and in every file it's baked into (`.python-version`, Docker base images,
+`pyproject.toml`, `package.json`, CI workflow), not just one of them.
+
+| Decision | Value |
+|---|---|
+| Python | 3.14 — `.python-version` and every Docker base image (`python:3.14-slim`) |
+| Node | 22 LTS — `node:22-alpine` in Docker, `engines` in `package.json` |
+| Postgres | 17 — dev, test, and prod. Never SQLite |
+| Django | 6+ on ASGI (Uvicorn) |
+| Frontend package manager | npm — `package-lock.json` committed, `npm ci` in CI/Docker. Only move to pnpm as a deliberate, recorded decision |
+| Coverage threshold | 80% (`--cov-fail-under=80`) |
+| Sentry | Included by default, wired to `SENTRY_DSN`; empty by default so it's inert in dev/CI and active the moment a DSN is set |
+| Placeholder project name | `myproject` — what `scripts/rename-project.sh` replaces in `.env.example`, `docker-compose*.yml`, `CLAUDE.md`, `pyproject.toml`, `package.json` |
+| GitHub org | Stays the `{{ORG}}` placeholder in this repo (`CLAUDE.md.template`, install commands). A cloned project fills in its real org — install commands (`uv add git+https://github.com/<org>/...`) don't work otherwise |
+
+## Non-negotiables for this repo
+- `uv` only. No `requirements.txt`, no `pip install`, anywhere, ever.
+- Postgres only. No SQLite, including in tests.
+- Django 6+ on ASGI. No `gunicorn`, no `wsgi:application` in any run command.
+- No authentication anywhere in this scaffold — auth is an installed app package.
+- Nothing project-specific. No client names, no business logic, no domain models.
+  Placeholders where a project must fill something in.
+- Dev and prod are separate Dockerfiles and separate compose files. Never one shared.
+- Prod containers run as a non-root user. Dev may run as root (bind-mount ownership).
+- Every secret comes from .env via decouple.config, with no default for required values.
+
+## Working agreement
+- Implement one phase at a time. Do not create files outside the current phase's scope.
+- Before writing a file that the spec shows, re-read that part of the spec.
+- After each phase, run the phase's verification command and paste the real output.
+  Never report success you haven't observed.
+- If something in the spec is ambiguous or looks wrong, ask. Do not guess and proceed.
+- Prefer boring, explicit, standard code. Cleverness here is a liability: this code gets
+  read and modified by people (and agents) who have never seen it before.

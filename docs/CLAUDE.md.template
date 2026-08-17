@@ -1,0 +1,202 @@
+<!--
+  TEMPLATE — copy to the repo root as CLAUDE.md and fill in every {{PLACEHOLDER}}.
+  `scripts/rename-project.sh` does the mechanical substitutions (BASE-DESIGN.md §11.1).
+
+  Design rules for this file, because they're easy to violate later:
+    1. It is read on EVERY agent turn. Every line competes for context. Keep it under
+       ~150 lines; push anything long-form into docs/ and link to it.
+    2. It must never be stale. A wrong installed-apps list is worse than no list, because
+       an agent will trust this file over the actual pyproject.toml. Updating it is part
+       of the task that changed things — see INTEGRATION-GUIDE.md §8.
+    3. It states rules and commands, not explanations. The reasoning lives in docs/.
+  Delete this comment block before committing.
+-->
+
+# CLAUDE.md — {{PROJECT_NAME}}
+
+Django 6 (ASGI) + Next.js App Router monorepo, cloned from `base-scaffold {{SCAFFOLD_VERSION}}`.
+Functionality arrives as **versioned, read-only app packages**; this repo is the host that
+wires them together.
+
+**Read `docs/INTEGRATION-GUIDE.md` in full before any task that installs an app, touches
+`core/`, or crosses two apps.** This file is the fast reference for everything else.
+
+## The one rule that matters most
+
+Anything under `backend/.venv`/`site-packages` or `frontend/node_modules` is **READ-ONLY**.
+Never edit an installed app package — not to fix a bug, not to tweak a default, not once.
+Escalation path: config issue → `backend/config/`; cross-app backend → `backend/core/`;
+cross-app UI → `frontend/app/`; different view behavior → subclass in `core/views/`;
+real bug in the app → a change in **that app's own repo**, released and re-pinned.
+Full table: `docs/INTEGRATION-GUIDE.md` §1.
+
+`backend/uv.lock` is machine-generated. Never hand-edit it, and never change a dependency
+line without `uv add` / `uv lock`.
+
+## Commands
+
+Prefer `make`; it's the single place these are defined.
+
+| Command | What it does |
+|---|---|
+| `make up` | Start the dev stack (`docker compose up --build`) |
+| `make down` / `make logs` | Stop / tail |
+| `make test` | Host test suite against an ephemeral Postgres |
+| `make lint` / `make fmt` / `make typecheck` | ruff + eslint / format / mypy + tsc |
+| **`make check`** | **lint + typecheck + test — the definition of done** |
+| `make migrate` / `make migrations` | Apply / create migrations |
+| `make shell` | `shell_plus` in the backend container |
+| `make deploy` | `./deploy/deploy-prod.sh` |
+
+Installing an app package (full protocol: `docs/INTEGRATION-GUIDE.md` §2):
+
+```bash
+cd backend  && uv add "git+https://github.com/{{ORG}}/<app>.git@vX.Y.Z#subdirectory=backend"
+cd frontend && npm install "github:{{ORG}}/<app>#vX.Y.Z:frontend"
+# then: copy the app's README config block into config/settings.py, add .env keys,
+# mount URLs, migrate, add its banned-api line, `docker compose up --build`,
+# and update the table below.
+```
+
+**Both halves must be at the same tag.** A restart without `--build` will not pick up a
+new package — that's the most common "I installed it but it isn't there."
+
+## Installed app packages
+
+Keep this current. It's how you know what already exists before building something new.
+
+| Package | Version | Module | Mounted at | Notes |
+|---|---|---|---|---|
+| {{e.g. auth-app}} | {{v3.1.0}} | `auth_app` | `/api/v1/auth/` | {{provides AUTH_USER_MODEL}} |
+| | | | | |
+
+Full catalogue of available apps across the org: {{APP_REGISTRY_URL}} (`BASE-DESIGN.md` §11.3).
+
+## Where code goes
+
+| Concern | Location |
+|---|---|
+| Settings, URLs, ASGI, Celery config | `backend/config/` |
+| **Anything that touches two apps at once** | `backend/core/` — the only place allowed to |
+| Signal receivers wiring app A's event to app B | `backend/core/signals.py` |
+| Multi-app orchestration (checkout, onboarding) | `backend/core/services/` |
+| Overrides/subclasses of an app's views | `backend/core/views/` |
+| Host-only shared helpers | `backend/tools/` — never imported by an app package |
+| Tests for all of the above | `backend/core/tests/` |
+| Template overrides | `backend/templates/<app_module>/…` (mirror the app's path) |
+| Cross-app UI composition | `frontend/app/` |
+
+## Non-negotiables
+
+- Every view has a `throttle_scope`, and the scope exists in `DEFAULT_THROTTLE_RATES`.
+- Every view has a `drf-spectacular` `@extend_schema` with the right `tags`.
+- Every model field used for filtering/ordering is indexed; every queryset uses
+  `select_related`/`prefetch_related`.
+- Signal receivers accept `**kwargs`, never raise into the sender, and defer slow work to a
+  Celery task via `transaction.on_commit`.
+- Secrets come from `.env` via `decouple.config` — never hardcoded, and every new key is
+  added to `.env.example` too.
+- Tests run on Postgres, never SQLite.
+- Anything new in `core/` gets a test in `core/tests/`.
+
+## Project conventions
+
+<!-- Deliberate local decisions and deviations. One line each. Add as they're made. -->
+- {{e.g. All API routes are mounted under /api/v1/ — no unversioned routes.}}
+- {{e.g. We mount payments-app at /api/v1/billing/ instead of its suggested prefix.}}
+
+## Gotchas
+
+<!-- The highest-value section in this file. Anything surprising, non-obvious, or
+     already-debugged-once belongs here so it isn't rediscovered. -->
+- {{e.g. payments_app's webhook view must stay unauthenticated — don't add a permission
+  class to the subclass in core/views/.}}
+
+## Definition of done
+
+Run `make check`, then walk `docs/INTEGRATION-GUIDE.md` §9. Don't skip it because the
+change looked small — that checklist exists because of the small ones. If an item can't
+be satisfied, **say so explicitly** rather than marking it done on an assumption.
+
+## When something doesn't fit cleanly
+
+If a piece of new logic could plausibly be reused in another project, **say so before
+writing it into `core/`.** `core/` is the right home for glue that's specific to this
+project; a self-contained capability probably wants to be a new app package instead
+(`docs/APP-DESIGN.md`). Defaulting to `core/` because it's the path of least resistance is
+how this architecture's reuse benefit quietly erodes.
+
+---
+---
+
+<!--
+  ============================================================================
+  VARIANT — for an APP PACKAGE repo, not a host project.
+  Copy the block below into the app repo's own CLAUDE.md instead of the above.
+  ============================================================================
+-->
+
+# CLAUDE.md — {{APP_NAME}} (app package)
+
+A standalone, versioned, dual-package Django + React app package. It is installed into host
+projects as read-only third-party code and must work in **any** host.
+
+**Read `docs/APP-DESIGN.md` in full before making changes.** This file is the fast reference.
+
+## The rules that define this package
+
+1. **Never import another app package.** Not in code, not in `pyproject.toml`. The only
+   sanctioned cross-app reference is `settings.AUTH_USER_MODEL` (a string Django resolves at
+   runtime). Anything else is the host's job, in its `core/`. → `APP-DESIGN.md` §6
+2. **Never import anything host-specific** — no `tools.*`, no `core.*`, no assumption about
+   the host's folder layout. Bundle an internal equivalent in `utils.py`. → §4
+3. **Public surface is exactly three things:** `signals.py` (events), `services.py`
+   (callables), `factories.py` (test-only). Models, views, and serializers are internal.
+   The frontend's public surface is exactly `src/index.ts` — the manager is never exported.
+4. **Wide dependency ranges, never exact pins**, on anything a host also uses
+   (`django`, `djangorestframework`, `celery`, …). Every installed app resolves into one
+   shared environment, so an exact pin makes this package un-combinable. → §1.1
+5. **Both halves release under one tag.** `backend/pyproject.toml`, `frontend/package.json`,
+   and `CHANGELOG.md` must state the same version — CI fails the build otherwise. → §11
+6. **Namespace everything that lands in a shared namespace** — throttle scopes, settings
+   keys, `.env` keys, query keys, cache keys, task names all carry the app's name. → §1.3
+
+## Commands
+
+```bash
+cd backend && uv sync             # dev + test groups included
+uv run pytest                     # authoritative gate for the Python half
+uv run ruff check --fix . && uv run ruff format .
+uv run mypy src
+uv build                          # what CI's wheel-smoke-test builds
+
+cd frontend && npm ci
+npm run test                      # Vitest + MSW — authoritative gate for the TS half
+npx tsc --noEmit && npm run lint
+
+# Verify the two halves against a real host before tagging — the highest-value check
+cd playground/backend && uv sync
+docker compose -f playground/docker-compose.yml up
+```
+
+## Semver triggers — these are MAJOR bumps even when the diff is small
+
+- Removing or renaming a **signal kwarg**, or renaming a signal.
+- Changing a **`services.py` method signature**.
+- Renaming or removing a **factory**.
+- Removing an export from `src/index.ts`, or changing a hook's return shape.
+- Renaming a settings key, `.env` key, or throttle scope (host config breaks silently).
+
+Anything above needs a **Host action:** line in `CHANGELOG.md` saying what a host must change.
+
+## Definition of done
+
+- `README.md`'s copy-paste config block matches reality: settings, `.env` keys, throttle
+  scopes, URL mounts, signal payload table, service signatures, factories, exported hooks.
+  → `APP-DESIGN.md` §8
+- Security checklist walked, not assumed — including an IDOR test per endpoint. → §9
+- Every service has a happy + failure path test; every view has 200/403/401; every hook has
+  a success + error test; every emitted signal is asserted with its exact payload. → §7.4
+- Version bumped in all three places; `CHANGELOG.md` entry written. → §11
+- Playground verified. CI green, including `resolution-matrix` and `wheel-smoke-test`.
+- App registry entry updated with the new version. → `BASE-DESIGN.md` §11.3
