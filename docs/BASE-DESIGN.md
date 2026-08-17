@@ -117,7 +117,7 @@ Two additions to the tree worth explaining:
 - **Celery + Redis** for background jobs needing chaining, retries, or scheduling, with `django-celery-beat`'s `DatabaseScheduler` for periodic tasks (see §6); Django's native `django.tasks` framework for simple one-off jobs (single email, single notification) that don't need Celery's overhead.
 - **`django-jazzmin`** for the admin theme, configured via `JAZZMIN_SETTINGS` in `config/settings.py`.
 - **`django-cors-headers`, `whitenoise`**, preconfigured.
-- **Logging split by environment** — `config/logging.py` returns a colored, human-readable console config when `DEBUG` is on and a `structlog`-based JSON config when it isn't. This is deliberate: JSON in dev is unreadable to a person, and colored text in prod is unparseable by any log aggregator, so a single config is wrong in one environment no matter which you pick. Both configs include a request ID so a single request's log lines can be correlated.
+- **Logging split by environment** — `config/logging.py` returns a colored, human-readable console config when `DEBUG` is on and a `structlog`-based JSON config when it isn't. This is deliberate: JSON in dev is unreadable to a person, and colored text in prod is unparseable by any log aggregator, so a single config is wrong in one environment no matter which you pick. Both configs include a request ID so a single request's log lines can be correlated — the `ContextVar`, the request-ID middleware, and the `logging.Filter` that reads it all live in `config/logging.py` alongside `build_logging_config()`, since all three exist only to serve it. This needs no new dependency: `contextvars` and `logging.Filter` are both stdlib.
 - **Sentry**, initialized in `config/settings.py` behind a `SENTRY_DSN` env var that's empty by default (so it's inert locally and in CI, active the moment a DSN is set). This is included rather than left out because the combination of Celery workers, ASGI concurrency, and N installed third-party app packages makes "an exception happened somewhere and nobody knew" the default failure mode otherwise. Wire the Django, Celery, and Redis integrations, and set `traces_sample_rate` low (0.1) rather than off, so slow-endpoint data exists when someone asks.
 - **`tools/`** — `mixins.py` (shared DRF mixins/error formats), `cache.py` (caching helpers), `crypto.py` (wraps a `Fernet` cipher built from `FERNET_KEY` in `.env`). These exist for `config/` and `core/` to use — see `INTEGRATION-GUIDE.md` §6 for why installed app packages don't reach into this folder.
 - **Frontend baseline** — Next.js App Router (TypeScript, `strict`) with `@tanstack/react-query` and a shared API client already set up in `frontend/lib/`, so an installed frontend app-package's hooks have a consistent client to plug into out of the box instead of every app package bootstrapping its own.
@@ -226,8 +226,11 @@ REST_FRAMEWORK = {
 }
 
 INSTALLED_APPS = [
-    "django.contrib.admin",
+    # jazzmin MUST precede django.contrib.admin — it overrides the admin templates via
+    # Django's app-directories loader, which resolves to the first match in this list.
+    # Reversed, the admin still renders, just silently unthemed — see CORRECTIONS.md #4.
     "jazzmin",
+    "django.contrib.admin",
     "rest_framework",
     "drf_spectacular",
     "corsheaders",
@@ -235,6 +238,28 @@ INSTALLED_APPS = [
     "core",
     # ---- installed app packages get added here, one line each, per their own README
 ]
+
+# Env-driven, defaulting to "secure unless DEBUG says otherwise" — see CORRECTIONS.md #3
+# for why SECURE_HSTS_SECONDS is the one exception that does NOT inherit that default.
+_SECURE_DEFAULT = not DEBUG
+SECURE_SSL_REDIRECT = config("SECURE_SSL_REDIRECT", default=_SECURE_DEFAULT, cast=bool)
+SESSION_COOKIE_SECURE = config("SESSION_COOKIE_SECURE", default=_SECURE_DEFAULT, cast=bool)
+CSRF_COOKIE_SECURE = config("CSRF_COOKIE_SECURE", default=_SECURE_DEFAULT, cast=bool)
+# Defaults to 0 in every environment, including prod: a year of HSTS is effectively
+# irreversible for the domain and every subdomain, so turning it on is a deliberate,
+# explicit act (backend/.env.prod.example sets 31536000), never an inherited default.
+SECURE_HSTS_SECONDS = config("SECURE_HSTS_SECONDS", default=0, cast=int)
+SECURE_HSTS_INCLUDE_SUBDOMAINS = SECURE_HSTS_SECONDS > 0
+SECURE_HSTS_PRELOAD = SECURE_HSTS_SECONDS > 0
+# Only trust X-Forwarded-Proto when we know a proxy sits in front — trusting it
+# unconditionally is a spoofing vector the moment the container is reachable directly.
+TRUST_PROXY_SSL_HEADER = config("TRUST_PROXY_SSL_HEADER", default=_SECURE_DEFAULT, cast=bool)
+if TRUST_PROXY_SSL_HEADER:
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+SESSION_COOKIE_HTTPONLY = True
+CSRF_COOKIE_HTTPONLY = False  # must stay JS-readable — the Next.js frontend sends it as a header
+X_FRAME_OPTIONS = "DENY"
+SECURE_CONTENT_TYPE_NOSNIFF = True
 
 LOGGING = build_logging_config(debug=DEBUG)   # from config/logging.py, see §3
 ```
@@ -457,6 +482,9 @@ jobs:
       FERNET_KEY: ${{ secrets.CI_FERNET_KEY }}
       ALLOWED_HOSTS: localhost
       DEBUG: "False"
+      # Without this, `check --deploy --fail-level WARNING` fails on security.W004 — see
+      # CORRECTIONS.md #3 for why the app itself never defaults this value to non-zero.
+      SECURE_HSTS_SECONDS: "31536000"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
