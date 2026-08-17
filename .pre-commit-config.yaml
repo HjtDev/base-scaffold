@@ -1,0 +1,78 @@
+# Tool versions come from backend/uv.lock and frontend/package-lock.json — NEVER from a
+# pre-commit `rev`. That's why ruff/mypy/eslint/prettier are `repo: local` hooks that shell
+# out to the project's own locked toolchain: it's the only way pre-commit and CI can't disagree.
+# Only genuinely dependency-free hooks (below) are pinned mirrors.
+#
+# Corrects docs/APP-DESIGN.md §3.6, whose mirror-based mypy hook runs in an isolated venv with
+# only [django-stubs, djangorestframework-stubs] — too little for `strict = true` +
+# mypy_django_plugin + a django_settings_module, which needs the whole project importable.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff
+        name: ruff check (backend)
+        entry: uv run --project backend ruff check --fix --force-exclude
+        language: system
+        types_or: [python, pyi]
+        files: ^backend/
+
+      - id: ruff-format
+        name: ruff format (backend)
+        entry: uv run --project backend ruff format --force-exclude
+        language: system
+        types_or: [python, pyi]
+        files: ^backend/
+
+      - id: mypy
+        name: mypy (backend)
+        # cd, not just --project: pre-commit runs hooks with cwd at the repo root, where mypy
+        # finds no pyproject.toml and silently loses strict/plugins/django_settings_module.
+        entry: bash -c 'cd backend && uv run mypy .'
+        language: system
+        files: ^backend/
+        pass_filenames: false
+        require_serial: true
+
+      - id: no-factories-in-core
+        name: no factories import in core/ production code
+        # BASE-DESIGN.md §5.2: importing another app's factories.py is sanctioned from
+        # core/tests/ and a bug everywhere else in core/. ruff's per-file-ignores can't express
+        # that split (see the banned-api comment in backend/pyproject.toml), so it's a grep here.
+        entry: >-
+          bash -c '
+          hits=$(grep -rIlE "^\s*(from|import)\s+[A-Za-z0-9_.]+\.factories" backend/core
+            --include="*.py" | grep -v "/tests/");
+          if [ -n "$hits" ]; then
+            echo "factories import found outside core/tests/ — see BASE-DESIGN.md §5.2:";
+            echo "$hits";
+            exit 1;
+          fi'
+        language: system
+        pass_filenames: false
+
+      - id: eslint
+        name: eslint (frontend)
+        # Same reasoning as mypy: needs the project's own flat config and local plugin resolution.
+        entry: bash -c 'cd frontend && npx eslint --fix'
+        language: system
+        files: ^frontend/
+        pass_filenames: false
+
+      - id: prettier
+        name: prettier (frontend)
+        entry: bash -c 'cd frontend && npx prettier --write .'
+        language: system
+        files: ^frontend/
+        pass_filenames: false
+
+  # Dependency-free hooks — no project toolchain involved, so a pinned rev is correct here.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-merge-conflict
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-added-large-files
+      - id: detect-private-key
+      - id: check-yaml
+      - id: check-toml

@@ -1,0 +1,127 @@
+[project]
+name = "myproject"
+version = "0.1.0"
+requires-python = ">=3.14"           # a HOST may pin tightly; app packages must not (§APP 1.1)
+
+dependencies = [
+    # ---- platform: the host decides the exact versions everyone runs against
+    "django>=6.0,<6.1",
+    "djangorestframework>=3.15,<4.0",
+    "drf-spectacular>=0.27,<1.0",
+    "django-cors-headers>=4.6,<5.0",
+    "django-jazzmin>=3.0,<4.0",
+    "django-celery-beat>=2.7,<3.0",
+    "celery[redis]>=5.4,<6.0",
+    "psycopg[binary]>=3.2,<4.0",
+    "python-decouple>=3.8,<4.0",
+    "whitenoise>=6.8,<7.0",
+    "uvicorn[standard]>=0.34,<1.0",
+    "cryptography>=44,<46",
+    "structlog>=25,<26",
+    "sentry-sdk[django,celery]>=2.20,<3.0",
+    # ---- installed app packages get appended here by `uv add`, one line each
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.12",
+    "mypy>=1.14",
+    "django-stubs[compatible-mypy]>=5.1",
+    "djangorestframework-stubs>=3.15",
+    "pre-commit>=4.0",
+    "django-debug-toolbar>=5.0",
+    "django-extensions>=3.2",        # shell_plus, show_urls
+]
+test = [
+    "pytest>=8.3",
+    "pytest-django>=4.9",
+    "pytest-cov>=6.0",
+    "pytest-xdist>=3.6",
+    "factory-boy>=3.3",              # needed to use installed apps' factories, APP-DESIGN §7.3
+    "freezegun>=1.5",
+]
+
+[tool.uv]
+default-groups = ["dev", "test"]
+
+# Uncomment ONE of these blocks while developing an app package against this project.
+# Swap it back to the pinned git ref before committing — see INTEGRATION-GUIDE.md §7.
+# [tool.uv.sources]
+# notifications-app = { path = "../notifications-app/backend", editable = true }
+
+# ---------------------------------------------------------------- ruff
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+src = ["."]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",     # pycodestyle
+    "F",          # pyflakes
+    "I",          # isort
+    "UP",         # pyupgrade
+    "B",          # bugbear
+    "DJ",         # flake8-django
+    "S",          # bandit — security
+    "TID",        # tidy-imports (used to enforce §6, see below)
+    "RUF",
+]
+ignore = ["S101"]  # assert is fine in tests
+
+[tool.ruff.lint.per-file-ignores]
+"core/**" = ["TID251"]       # core/ is the mediator — it's ALLOWED to know two apps exist
+"config/**" = ["TID251"]     # settings.py/urls.py reference app modules by design
+"*/migrations/*" = ["E501", "RUF012"]
+"*/tests/**" = ["S"]         # bandit rules are noise in tests — same exemption as APP-DESIGN §3.1
+"conftest.py" = ["S"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "parents"
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+# Machine-enforces the mediator rule: only core/ and config/ may import app packages.
+# Add ONE line per installed app — INTEGRATION-GUIDE.md §2 step 9 makes this a wiring step.
+# No apps are installed in a fresh scaffold, so this table starts empty. Format:
+#
+# "notifications_app".msg = "Import app packages only from core/ or config/ — INTEGRATION-GUIDE.md §4"
+#
+# NOTE: BASE-DESIGN.md §5.2 also asks for a "*.factories" entry exempted in core/tests/**.
+# That is not expressible here — per-file-ignores is additive, so the "core/**" TID251 ignore
+# above covers core/tests/** as well. The factories rule is enforced instead by the
+# `no-factories-in-core` hook in .pre-commit-config.yaml.
+
+# ---------------------------------------------------------------- mypy
+[tool.mypy]
+python_version = "3.14"
+strict = true
+plugins = ["mypy_django_plugin.main", "mypy_drf_plugin.main"]
+warn_unreachable = true
+exclude = ["migrations/"]
+
+[[tool.mypy.overrides]]
+module = "*.migrations.*"
+ignore_errors = true
+
+[tool.django-stubs]
+django_settings_module = "config.settings"
+
+# ---------------------------------------------------------------- pytest
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings"
+pythonpath = ["."]
+testpaths = ["core/tests", "config/tests", "tools/tests"]
+python_files = ["test_*.py"]
+addopts = """
+  -ra --strict-markers --strict-config
+  --cov=core --cov=tools --cov=config
+  --cov-report=term-missing --cov-fail-under=80
+"""
+markers = [
+    "slow: excluded from the default run, opt in with -m slow",
+    "integration: crosses a real DB/broker boundary rather than mocking it",
+]
+filterwarnings = ["error::DeprecationWarning"]
+
+[tool.coverage.run]
+omit = ["*/migrations/*", "*/tests/*"]
