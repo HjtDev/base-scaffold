@@ -548,6 +548,70 @@ Beyond the user relation (§2), two apps needing to relate to each other's data 
 
 2. **Two concepts that are really one thing — don't force a split.** If two concepts are coupled tightly enough that they'd always need a direct reference to each other and would always release together — a cart and the order it becomes — that's a sign they're one package, not two decoupled ones with a manufactured exception carved into the import rule. Shipping them as a single package (with real foreign keys between their models, since they're in the same app) is more honest than inventing a special case for one pair of apps.
 
+### Realtime (optional fourth surface)
+
+Channels is not part of the base scaffold (`BASE-DESIGN.md` §3 "WebSockets") — most projects
+never open a socket, and a project that does opts in explicitly. An app package that needs
+realtime delivery exposes a **fourth public surface**, alongside `urls.py`/`urls_admin.py`,
+`signals.py`/`services.py`, and `factories.py`:
+
+```python
+# notifications_app/routing.py
+from django.urls import re_path
+
+from . import consumers
+
+websocket_urlpatterns = [
+    re_path(r"ws/notifications/$", consumers.NotificationConsumer.as_asgi()),
+]
+```
+
+```python
+# notifications_app/consumers.py
+from channels.generic.websocket import AsyncJsonWebsocketConsumer
+
+
+class NotificationConsumer(AsyncJsonWebsocketConsumer):
+    async def connect(self) -> None:
+        if not self.scope["user"].is_authenticated:
+            await self.close()
+            return
+        await self.channel_layer.group_add(f"user-{self.scope['user'].id}", self.channel_name)
+        await self.accept()
+
+    async def notification_message(self, event: dict) -> None:
+        await self.send_json(event["payload"])
+```
+
+**The host mounts `websocket_urlpatterns` explicitly in `config/asgi.py`** — nothing
+auto-discovers it, same as every other wiring point in this ecosystem. See `BASE-DESIGN.md`
+§3 "WebSockets" for the `ProtocolTypeRouter` composition on the host side.
+
+**`channels` is a wide-range *optional* dependency** — an extra, e.g. `notifications-app[realtime]`
+— so the package still installs cleanly into a host that isn't running Channels at all. A host
+that never imports `routing.py`/`consumers.py` never needs the extra; only `config/asgi.py`
+pulling them in requires it.
+
+**The §6 boundary rules apply here unchanged: a consumer must never import another app
+package.** The mediator for realtime is the same one for everything else — a receiver in
+`core/signals.py`, calling `channel_layer.group_send(...)` — not a direct import between two
+apps' consumers. App A's `services.py` fires a signal; `core/signals.py` decides that event
+should be pushed over app B's socket and calls `group_send` itself. Neither app knows the
+other's channel-group naming scheme, let alone that a socket is involved.
+
+**Auth is the one thing every realtime app needs and none should reimplement.**
+`channels.auth.AuthMiddlewareStack` is session-based, but auth in this ecosystem is a
+standalone JWT app package (`BASE-DESIGN.md` §3), and a browser cannot set an `Authorization`
+header on a WebSocket handshake — the socket has to authenticate via a token in the query
+string or a subprotocol instead. That middleware belongs in the **auth app package**, exposed
+as something like `JWTAuthMiddlewareStack`, so the first app that ships a consumer doesn't
+have to invent (and every app after it doesn't have to re-invent) how a socket proves who's
+connecting.
+
+`routing.py` and `consumers.py` are a public surface like any other — changing a consumer's
+message shape or removing a route is a **major** version bump, same rule as `signals.py`
+payloads in §6.
+
 ## 7. Testing Standards
 
 `pytest` is the authoritative gate for the Python half; Vitest + MSW for the TypeScript half. Configuration lives in `backend/pyproject.toml` (§3.1) — there is no separate `pytest.ini`, `setup.cfg`, or `tox.ini`.

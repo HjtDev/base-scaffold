@@ -111,7 +111,7 @@ Two additions to the tree worth explaining:
 
 ## 3. Pre-Configured Base Stack
 
-- **Django 6 on ASGI**, served by Uvicorn (not Gunicorn/WSGI). `daphne` is a fine substitute if an installed app package ends up needing native WebSocket routing through `asgi.py`.
+- **Django 6 on ASGI**, served by Uvicorn (not Gunicorn/WSGI). `uvicorn[standard]` already speaks WebSocket and works fine with Channels if a project needs one later — see "WebSockets" below. `daphne` is the reference ASGI server in Channels' own docs, not a requirement.
 - **Django REST Framework + `drf-spectacular`** for the API and its OpenAPI/Swagger schema.
 - **Postgres 17** as the only supported database, in dev, test, and prod. No SQLite anywhere, including tests — see §5.3.
 - **Celery + Redis** for background jobs needing chaining, retries, or scheduling, with `django-celery-beat`'s `DatabaseScheduler` for periodic tasks (see §6); Django's native `django.tasks` framework for simple one-off jobs (single email, single notification) that don't need Celery's overhead.
@@ -123,6 +123,68 @@ Two additions to the tree worth explaining:
 - **Frontend baseline** — Next.js App Router (TypeScript, `strict`) with `@tanstack/react-query` and a shared API client already set up in `frontend/lib/`, so an installed frontend app-package's hooks have a consistent client to plug into out of the box instead of every app package bootstrapping its own.
 
 **Deliberately not included: authentication.** `SIMPLE_JWT` or any other auth configuration does not belong in the base scaffold — auth is its own standalone, versioned app package (per `APP-DESIGN.md`), installed into a project the same way payments or notifications would be. This keeps the scaffold auth-agnostic and keeps a project free to swap auth strategies without touching the base at all.
+
+### WebSockets
+
+**Deliberately excluded, for the same reason as auth.** Django has no WebSocket handling of
+its own — adding it means `django-channels` plus a channel layer (Redis-backed, same as
+everything else here), and most projects never open a socket. `config/asgi.py` as shipped by
+this scaffold only calls `get_asgi_application()`, which handles the `http` scope and nothing
+else. That's the full ASGI foundation a project gets by default: real WebSocket support is an
+opt-in a project adds when it actually needs one, not baked in speculatively.
+
+`uvicorn[standard]` — already the pinned ASGI server, see above — speaks WebSocket out of the
+box and works with Channels; nothing about the server needs to change to add it.
+
+**When a project does need it**, the protocol is the same shape as everything else in this
+scaffold: add the dependency, then wire it explicitly in `config/`, never by auto-discovery.
+
+1. `uv add channels channels-redis` to `backend/pyproject.toml`.
+2. Compose `http` and `websocket` scopes in `config/asgi.py` with `ProtocolTypeRouter` — the
+   host is the mediator for the `websocket` scope in exactly the same sense `config/urls.py`
+   is the mediator for `http`:
+
+   ```python
+   # config/asgi.py
+   import os
+
+   from django.core.asgi import get_asgi_application
+
+   os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
+
+   # get_asgi_application() MUST run before any consumer is imported — consumers pull in
+   # models, and importing a model before Django's app registry is populated raises
+   # AppRegistryNotReady. This ordering is the one part of this file that isn't optional.
+   django_asgi_app = get_asgi_application()
+
+   from channels.auth import AuthMiddlewareStack
+   from channels.routing import ProtocolTypeRouter, URLRouter
+
+   # from notifications_app.routing import websocket_urlpatterns as notifications_ws
+
+   application = ProtocolTypeRouter(
+       {
+           "http": django_asgi_app,
+           "websocket": AuthMiddlewareStack(
+               URLRouter(
+                   [
+                       # *notifications_ws,
+                   ]
+               )
+           ),
+       }
+   )
+   ```
+
+3. Update `docker-compose*.yml`'s `backend` service — no change needed to the run command
+   itself (`uvicorn config.asgi:application` already serves both scopes once `channels` is
+   installed), but production nginx needs an explicit block for the WebSocket path that
+   forwards the `Upgrade`/`Connection` headers nginx doesn't pass through by default. This is
+   a deploy-side change, not only an application-code one, and easy to forget because
+   everything works locally without it (`runserver`/Uvicorn don't need it).
+
+See `APP-DESIGN.md` §6 ("Realtime") for how an installed app package contributes routes and
+consumers into this composition.
 
 ## 4. Toolchain, Dependencies & Environment Strategy
 
