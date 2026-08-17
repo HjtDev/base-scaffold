@@ -285,6 +285,11 @@ ban-relative-imports = "parents"
 "cart_app".msg = "App packages must never import each other — see APP-DESIGN.md §6."
 "auth_app".msg = "Use settings.AUTH_USER_MODEL instead — see APP-DESIGN.md §2."
 
+# Factories are a test-only surface (§7.3). This works in an app repo because the test
+# tree lives outside src/ and is cleanly exempted below — a host project can't do the
+# same, see BASE-DESIGN.md §5.2.
+"notifications_app.factories".msg = "factories.py is test-only — see APP-DESIGN.md §7.3."
+
 # ---------------------------------------------------------------- mypy
 [tool.mypy]
 python_version = "3.13"
@@ -371,25 +376,44 @@ Required-and-secret values (API keys) are the exception: those come from the env
 ```yaml
 # .pre-commit-config.yaml
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.12.0
+  # Tool versions come from uv.lock / package-lock.json, never a pinned `rev` —
+  # so pre-commit and CI can never disagree about which formatter is authoritative.
+  - repo: local
     hooks:
       - id: ruff
-        args: [--fix]
+        name: ruff
+        entry: bash -c 'cd backend && uv run ruff check --fix .'
+        language: system
+        types_or: [python, pyi]
         files: ^backend/
+        pass_filenames: false
       - id: ruff-format
+        name: ruff-format
+        entry: bash -c 'cd backend && uv run ruff format .'
+        language: system
+        types_or: [python, pyi]
         files: ^backend/
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.14.0
-    hooks:
+        pass_filenames: false
       - id: mypy
+        name: mypy
+        entry: bash -c 'cd backend && uv run mypy src'
+        language: system
         files: ^backend/src/
-        additional_dependencies: [django-stubs, djangorestframework-stubs]
-  - repo: https://github.com/pre-commit/mirrors-prettier
-    rev: v4.0.0-alpha.8
-    hooks:
-      - id: prettier
+        pass_filenames: false
+        require_serial: true
+      - id: eslint
+        name: eslint
+        entry: bash -c 'cd frontend && npx eslint --fix src'
+        language: system
         files: ^frontend/
+        pass_filenames: false
+      - id: prettier
+        name: prettier
+        entry: bash -c 'cd frontend && npx prettier --write src'
+        language: system
+        files: ^frontend/
+        pass_filenames: false
+  # Only environment-independent hooks stay as pinned mirrors.
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
@@ -397,11 +421,14 @@ repos:
       - id: end-of-file-fixer
       - id: trailing-whitespace
       - id: check-added-large-files
+      - id: detect-private-key
+      - id: check-yaml
+      - id: check-toml
 ```
 
 `uv run pre-commit install` once per clone. This matters more in this ecosystem than in a normal project: you have one base repo plus N app repos that all need to stay stylistically consistent without a human re-checking each one, and pre-commit is what makes that automatic instead of aspirational.
 
-> **Correction (found during base-scaffold Phase 1 implementation):** the `mirrors-mypy` hook above fails as written. It runs mypy in pre-commit's own isolated venv with only `additional_dependencies: [django-stubs, djangorestframework-stubs]` installed, but §3.1's mypy config is `strict = true` with `mypy_django_plugin`/`mypy_drf_plugin` and a `django_settings_module` — that needs Django, DRF, and the whole package importable, not just stub packages. Separately, a pinned `rev: v0.12.0` for `ruff-pre-commit` against a `ruff>=0.12` range in `pyproject.toml` means pre-commit and CI can silently run different ruff versions. Use `repo: local` hooks that shell out to `uv run` instead, so pre-commit always runs the exact toolchain in the lockfile — see `base-scaffold`'s `.pre-commit-config.yaml` for the corrected shape (`entry: bash -c 'cd backend && uv run mypy .'`, etc.). Only truly dependency-free hooks (`check-merge-conflict`, `end-of-file-fixer`, …) should stay as pinned mirrors.
+The `cd` in each entry is load-bearing. `uv run --project backend mypy` sets environment resolution but not the working directory, so mypy would look for config in the repo root, find none, and run *without* `strict`, the Django plugin, or `django_settings_module` — passing while checking almost nothing. Any tool that discovers its config from the current directory needs the explicit `cd`.
 
 ## 4. Views, Rate Limiting & API Documentation Standards
 
@@ -644,7 +671,7 @@ class NotificationFactory(factory.django.DjangoModelFactory):
 
 Rules for it:
 - `factory-boy` is declared in the `test` **dependency group**, not `[project.dependencies]` — so a host that imports factories in its tests must add `factory-boy` to its own test group. Document that in the README block. (An app must not force `factory-boy` into every production install.)
-- Importing `notifications_app.factories` from another app's *tests* or from `core/tests/` is allowed and expected. Importing it from anywhere in production code is a bug, and `ruff`'s `TID251` config in §3.1 should ban it outside test paths.
+- Importing `notifications_app.factories` from another app's *tests* or from `core/tests/` is allowed and expected. Importing it from anywhere in production code is a bug, and `ruff`'s `TID251` config in §3.1 bans it outside test paths. A host project can't enforce this with ruff for structural reasons — see `BASE-DESIGN.md` §5.2 for the grep-based equivalent.
 - Factories are covered by semver like anything else public: renaming `NotificationFactory` is a breaking change.
 
 ### 7.4 What gets tested, at minimum

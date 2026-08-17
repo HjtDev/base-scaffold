@@ -64,3 +64,45 @@ update it here and in every file it's baked into (`.python-version`, Docker base
 - If you think something needs reverting, say so and let me do it.
 
 ### Commit message format
+
+```
+semantic(<scope>): <short_commit_message>
+
+Dashed description of changes
+
+Add <what was added>
+Remove <what was removed>
+Update <what was changed>
+```
+
+Rules for it:
+- `semantic` is one of: `feat`, `fix`, `chore`, `docs`, `refactor`, `test`, `build`, `ci`,
+  `perf`, `style`. Use `!` after the scope for a breaking change: `feat(core)!:`.
+- `<scope>` is the area touched, lowercase, one word where possible — `backend`, `frontend`,
+  `core`, `config`, `docker`, `ci`, `deps`, `tooling`, `deploy`. Use the narrowest scope that
+  covers the change; if a change genuinely spans everything, it's probably two commits.
+- `<short_commit_message>` is imperative mood, lowercase, no trailing period, under 60 chars
+  — "add uv project config", not "Added uv project config."
+- Keep the literal line `Dashed description of changes` as the body's first line, then a
+  blank line, then the bullets.
+- One bullet per meaningful change, each starting with an imperative verb (`Add`, `Remove`,
+  `Update`, `Move`, `Rename`, `Fix`, `Pin`, `Enable`, `Disable`). Capitalised, no trailing
+  period. Group trivia rather than listing every file — bullets describe changes, not a
+  file inventory.
+- If a change requires action from me or from a host project (a new `.env` key, a manual
+  migration, a config block to copy), add a final line: `Host action: <what to do>`.
+- No co-author trailers, no "generated with" footers, no emoji.
+
+Example:
+
+```
+chore(backend): add uv project config and tooling baseline
+
+Dashed description of changes
+
+Add backend/pyproject.toml with dependencies, dev/test dependency groups and uv default-groups
+Add ruff, mypy, pytest and coverage configuration
+Add commented banned-api table enforcing the core/-only app import rule
+Add MANIFEST.in, .python-version and .dockerignore
+Update .gitignore to cover .venv, .ruff_cache and .mypy_cache
+```

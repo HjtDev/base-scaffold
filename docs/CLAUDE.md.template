@@ -126,6 +126,62 @@ project; a self-contained capability probably wants to be a new app package inst
 (`docs/APP-DESIGN.md`). Defaulting to `core/` because it's the path of least resistance is
 how this architecture's reuse benefit quietly erodes.
 
+## Git protocol
+
+- Never stage or commit unless explicitly asked. Every diff gets reviewed before it lands.
+- Never `git push`, `git reset --hard`, `git checkout <branch>`, force-push, or amend an
+  existing commit. Ever. Ask instead.
+- When a phase or task is done, don't commit. Instead:
+  1. Summarise what changed and the verification output that passed.
+  2. Propose a commit message in the exact format below, in a fenced code block so it can
+     be copied verbatim.
+  Then stop and wait for review before committing.
+- If something needs reverting, say so and let the reviewer do it.
+
+### Commit message format
+
+```
+semantic(<scope>): <short_commit_message>
+
+Dashed description of changes
+
+Add <what was added>
+Remove <what was removed>
+Update <what was changed>
+```
+
+Rules for it:
+- `semantic` is one of: `feat`, `fix`, `chore`, `docs`, `refactor`, `test`, `build`, `ci`,
+  `perf`, `style`. Use `!` after the scope for a breaking change: `feat(core)!:`.
+- `<scope>` is the area touched, lowercase, one word where possible — `backend`, `frontend`,
+  `core`, `config`, `docker`, `ci`, `deps`, `tooling`, `deploy`. Use the narrowest scope that
+  covers the change; if a change genuinely spans everything, it's probably two commits.
+- `<short_commit_message>` is imperative mood, lowercase, no trailing period, under 60 chars
+  — "add uv project config", not "Added uv project config."
+- Keep the literal line `Dashed description of changes` as the body's first line, then a
+  blank line, then the bullets.
+- One bullet per meaningful change, each starting with an imperative verb (`Add`, `Remove`,
+  `Update`, `Move`, `Rename`, `Fix`, `Pin`, `Enable`, `Disable`). Capitalised, no trailing
+  period. Group trivia rather than listing every file — bullets describe changes, not a
+  file inventory.
+- If a change requires action from a host project (a new `.env` key, a manual migration, a
+  config block to copy), add a final line: `Host action: <what to do>`.
+- No co-author trailers, no "generated with" footers, no emoji.
+
+Example:
+
+```
+chore(backend): add uv project config and tooling baseline
+
+Dashed description of changes
+
+Add backend/pyproject.toml with dependencies, dev/test dependency groups and uv default-groups
+Add ruff, mypy, pytest and coverage configuration
+Add commented banned-api table enforcing the core/-only app import rule
+Add MANIFEST.in, .python-version and .dockerignore
+Update .gitignore to cover .venv, .ruff_cache and .mypy_cache
+```
+
 ---
 ---
 
@@ -200,3 +256,65 @@ Anything above needs a **Host action:** line in `CHANGELOG.md` saying what a hos
 - Version bumped in all three places; `CHANGELOG.md` entry written. → §11
 - Playground verified. CI green, including `resolution-matrix` and `wheel-smoke-test`.
 - App registry entry updated with the new version. → `BASE-DESIGN.md` §11.3
+
+## Git protocol
+
+- Never stage or commit unless explicitly asked. Every diff gets reviewed before it lands.
+- Never `git push`, `git reset --hard`, `git checkout <branch>`, force-push, or amend an
+  existing commit. Ever. Ask instead.
+- When a phase or task is done, don't commit. Instead:
+  1. Summarise what changed and the verification output that passed.
+  2. Propose a commit message in the exact format below, in a fenced code block so it can
+     be copied verbatim.
+  Then stop and wait for review before committing.
+- If something needs reverting, say so and let the reviewer do it.
+
+### Commit message format
+
+```
+semantic(<scope>): <short_commit_message>
+
+Dashed description of changes
+
+Add <what was added>
+Remove <what was removed>
+Update <what was changed>
+```
+
+Rules for it:
+- `semantic` is one of: `feat`, `fix`, `chore`, `docs`, `refactor`, `test`, `build`, `ci`,
+  `perf`, `style`. Use `!` after the scope for a breaking change: `feat(core)!:`.
+- `<scope>` is the area touched, lowercase, one word where possible — `backend`, `frontend`,
+  `core`, `config`, `docker`, `ci`, `deps`, `tooling`, `deploy`. Use the narrowest scope that
+  covers the change; if a change genuinely spans everything, it's probably two commits.
+- `<short_commit_message>` is imperative mood, lowercase, no trailing period, under 60 chars
+  — "add uv project config", not "Added uv project config."
+- Keep the literal line `Dashed description of changes` as the body's first line, then a
+  blank line, then the bullets.
+- One bullet per meaningful change, each starting with an imperative verb (`Add`, `Remove`,
+  `Update`, `Move`, `Rename`, `Fix`, `Pin`, `Enable`, `Disable`). Capitalised, no trailing
+  period. Group trivia rather than listing every file — bullets describe changes, not a
+  file inventory.
+- If a change requires action from a host project (a new `.env` key, a manual migration, a
+  config block to copy), add a final line: `Host action: <what to do>`.
+- No co-author trailers, no "generated with" footers, no emoji.
+- Scopes for an app package: `backend`, `frontend`, `models`, `api`, `services`, `signals`,
+  `tasks`, `hooks`, `ci`, `deps`, `playground`, `docs`.
+- A commit that changes a signal payload, service signature, factory name, settings key,
+  throttle scope, or exported hook must use `!` and state the impact:
+  `feat(signals)!: add channel kwarg to notification_sent`. Add a `Host action:` line for
+  anything a host must change.
+
+Example:
+
+```
+chore(backend): add uv project config and tooling baseline
+
+Dashed description of changes
+
+Add backend/pyproject.toml with dependencies, dev/test dependency groups and uv default-groups
+Add ruff, mypy, pytest and coverage configuration
+Add commented banned-api table enforcing the core/-only app import rule
+Add MANIFEST.in, .python-version and .dockerignore
+Update .gitignore to cover .venv, .ruff_cache and .mypy_cache
+```

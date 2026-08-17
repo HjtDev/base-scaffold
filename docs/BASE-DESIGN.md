@@ -264,6 +264,8 @@ The scaffold ships with all of this configured, so a new project starts with the
 
 Same toolchain as the app packages (`APP-DESIGN.md` §3), configured in `backend/pyproject.toml`, plus one host-specific addition worth calling out:
 
+**This table ships commented out.** The scaffold contains no project-specific content, so it can't name apps a project may never install — and a partially-populated list reads as authoritative when it isn't. Ship the `per-file-ignores` block live (it's app-agnostic and needed from day one) and the `banned-api` entries as commented examples; `INTEGRATION-GUIDE.md` §2 step 9 is what adds a real line per installed app.
+
 ```toml
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 # Machine-enforces the mediator rule: only core/ and config/ may import app packages.
@@ -281,7 +283,7 @@ This turns the "zero direct imports between two app packages" checklist item in 
 
 Frontend: ESLint (`next/core-web-vitals` + `@typescript-eslint`), Prettier, and `tsc --noEmit` in CI. `tsconfig.json` sets `"strict": true` and, ideally, `"noUncheckedIndexedAccess": true`.
 
-`.pre-commit-config.yaml` runs ruff (check + format), mypy on `backend/`, prettier/eslint on `frontend/`, plus `check-merge-conflict`, `end-of-file-fixer`, `trailing-whitespace`, `check-added-large-files`, and `detect-private-key`. `uv run pre-commit install` is step 6 of the bootstrap in §10.
+`.pre-commit-config.yaml` uses **`repo: local` hooks with `language: system`** for ruff, ruff-format, mypy, eslint and prettier, invoked through `uv run` / `npx` so they resolve from `uv.lock` and `package-lock.json`. Mirror-based hooks with a pinned `rev` are wrong for these: mypy here is `strict` with `mypy_django_plugin` and a `django_settings_module`, so it needs Django and the whole backend importable, which pre-commit's isolated venv doesn't provide — and a pinned `rev` means pre-commit and CI can run two different formatter versions. Only genuinely environment-independent hooks stay as pinned mirrors: `check-merge-conflict`, `end-of-file-fixer`, `trailing-whitespace`, `check-added-large-files`, `detect-private-key`, `check-yaml`, `check-toml`. Add the factories grep from §5.2 as a local hook too. `uv run --directory backend pre-commit install` is step 6 of the bootstrap in §10.
 
 ### 5.2 pytest configuration & conftest hierarchy
 
@@ -329,9 +331,16 @@ def checkout_ready_user(user):
     return user
 ```
 
-Importing another app's factories from `core/tests/` is sanctioned and expected; importing them from `core/services/` is a bug (`ruff` bans it via the `TID251` config above, since `per-file-ignores` only exempts production `core/` from the *app-import* ban, not from a separate factories rule — keep a distinct `banned-api` entry for `*.factories` with `core/tests/**` exempted).
+Importing another app's factories from `core/tests/` is sanctioned and expected; importing them from `core/services/` or any other production code is a bug.
 
-> **Correction (found during Phase 1 implementation):** the `*.factories` `banned-api` entry described above is not actually expressible in ruff. `per-file-ignores` is additive — the `"core/**" = ["TID251"]` exemption already covers `core/tests/**`, so there is no per-file-ignores combination that bans factories imports in `core/services/` while allowing them in `core/tests/`. The scaffold instead enforces this with a grep-based `no-factories-in-core` hook in `.pre-commit-config.yaml` (fails on any `*.factories` import under `backend/core/` outside `tests/`). `INTEGRATION-GUIDE.md` §9's "No `factories` import in production code" checklist item is enforced by that hook, not by ruff.
+**This rule can't be enforced with ruff in a host project**, and it's worth understanding why, because the reasoning applies to any future rule of this shape. `banned-api` violations all report as `TID251`, and `per-file-ignores` disables a rule *code* for a path. Since `core/**` must already ignore `TID251` (production `core/` legitimately imports app packages — that's its purpose), any factories entry in `banned-api` is silently disabled throughout `core/`, including the production code you wanted to catch. There's no way to re-enable a rule for a subpath. So enforce it with grep instead, in pre-commit and in CI:
+
+```bash
+# fails if production core/ imports factories; core/tests/ is fine
+! grep -rn '\.factories' backend/core --include='*.py' | grep -v '/tests/'
+```
+
+Note this asymmetry with app packages: in an app repo the same rule *does* work via ruff, because its test tree lives outside `src/` and can be cleanly exempted (`APP-DESIGN.md` §3.1). The host's problem is that `core/` and `core/tests/` share one subtree.
 
 ### 5.3 Tests run on Postgres
 
