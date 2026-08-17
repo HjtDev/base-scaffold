@@ -51,3 +51,16 @@ update it here and in every file it's baked into (`.python-version`, Docker base
 - If something in the spec is ambiguous or looks wrong, ask. Do not guess and proceed.
 - Prefer boring, explicit, standard code. Cleverness here is a liability: this code gets
   read and modified by people (and agents) who have never seen it before.
+
+## Git protocol
+- Never stage or commit unless I explicitly ask. I review every diff before it lands.
+- Never `git push`, `git reset --hard`, `git checkout <branch>`, force-push, or amend an
+  existing commit. Ever. Ask instead.
+- When a phase or task is done, don't commit. Instead:
+  1. Summarise what changed and the verification output that passed.
+  2. Propose a commit message in the exact format below, in a fenced code block so I can
+     copy it verbatim.
+  Then stop and wait. I'll review, then ask you to commit.
+- If you think something needs reverting, say so and let me do it.
+
+### Commit message format

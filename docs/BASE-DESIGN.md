@@ -331,6 +331,8 @@ def checkout_ready_user(user):
 
 Importing another app's factories from `core/tests/` is sanctioned and expected; importing them from `core/services/` is a bug (`ruff` bans it via the `TID251` config above, since `per-file-ignores` only exempts production `core/` from the *app-import* ban, not from a separate factories rule — keep a distinct `banned-api` entry for `*.factories` with `core/tests/**` exempted).
 
+> **Correction (found during Phase 1 implementation):** the `*.factories` `banned-api` entry described above is not actually expressible in ruff. `per-file-ignores` is additive — the `"core/**" = ["TID251"]` exemption already covers `core/tests/**`, so there is no per-file-ignores combination that bans factories imports in `core/services/` while allowing them in `core/tests/`. The scaffold instead enforces this with a grep-based `no-factories-in-core` hook in `.pre-commit-config.yaml` (fails on any `*.factories` import under `backend/core/` outside `tests/`). `INTEGRATION-GUIDE.md` §9's "No `factories` import in production code" checklist item is enforced by that hook, not by ruff.
+
 ### 5.3 Tests run on Postgres
 
 `docker-compose.test.yml` provides an ephemeral Postgres + Redis on non-default ports, so a test run never collides with the dev stack:
