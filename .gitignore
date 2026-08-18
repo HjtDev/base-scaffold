@@ -64,6 +64,8 @@ node_modules/
 out/
 coverage/
 npm-debug.log*
+next-env.d.ts
+*.tsbuildinfo
 
 # ---------------------------------------------------------------- env files (docs/BASE-DESIGN.md §4.4)
 # Every .env is gitignored; every .env.example is tracked and explicitly negated back in.

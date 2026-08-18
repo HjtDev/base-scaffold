@@ -156,6 +156,12 @@ JAZZMIN_SETTINGS = {
 
 # ---------------------------------------------------------------------------- CORS
 CORS_ALLOWED_ORIGINS = config("CORS_ALLOWED_ORIGINS", default="", cast=Csv())
+# Off unless an installed auth app uses cross-origin cookies. Incompatible with
+# CORS_ALLOW_ALL_ORIGINS: the browser rejects a wildcard Access-Control-Allow-Origin on a
+# credentialed request, so CORS_ALLOWED_ORIGINS must stay an explicit list in every
+# environment, never a wildcard, if this is ever turned on. A cookie-session auth app also
+# needs CSRF_TRUSTED_ORIGINS below. See BASE-DESIGN.md §3, "Auth integration".
+CORS_ALLOW_CREDENTIALS = config("CORS_ALLOW_CREDENTIALS", default=False, cast=bool)
 
 # ---------------------------------------------------------------------------- security
 # Env-driven, defaulting to "secure unless DEBUG says otherwise". See CORRECTIONS.md #3
@@ -177,6 +183,9 @@ if TRUST_PROXY_SSL_HEADER:
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 SESSION_COOKIE_HTTPONLY = True
 CSRF_COOKIE_HTTPONLY = False  # must stay JS-readable — the Next.js frontend sends it as a header
+# Empty by default, matching Django's own default — set to the frontend's origin(s) once a
+# cookie-session auth app is installed. See BASE-DESIGN.md §3, "Auth integration".
+CSRF_TRUSTED_ORIGINS = config("CSRF_TRUSTED_ORIGINS", default="", cast=Csv())
 X_FRAME_OPTIONS = "DENY"
 SECURE_CONTENT_TYPE_NOSNIFF = True
 

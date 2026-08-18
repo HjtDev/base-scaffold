@@ -264,17 +264,23 @@ Create in frontend/:
 - package.json per §12's excerpt — react and @tanstack/react-query as peerDependencies
   ONLY, an exports map with just ".", files: ["dist"], version matching backend/pyproject.toml
 - tsconfig.json (strict), tsconfig.build.json, vitest.config.ts, eslint config
-- src/types.ts — request/response types matching the Phase 4 serializers exactly
-- src/api/client.ts — thin wrapper over the host's fetcher; base URL from host config,
-  never hardcoded
-- src/api/manager.ts — one method per endpoint; the ONLY place a raw HTTP call exists;
+- src/types.ts — request/response types matching the Phase 4 serializers exactly, plus the
+  HttpClient interface (get/post/patch/delete) every SDK declares per §12
+- src/api/context.tsx — the provider + config hook that receives the host's client and
+  basePath at runtime; §12's "SDK-to-host client contract" — never a hardcoded base URL,
+  never an import of any host module
+- src/api/manager.ts — instance-based, constructed from the injected client and basePath
+  (never a static class); one method per endpoint; the ONLY place a raw HTTP call exists;
   never exported from index.ts
-- src/hooks/* — thin react-query wrappers, one per CONTRACT.md item 6, with an exported
-  key factory per hook family and mutations invalidating the right keys
-- src/index.ts — hooks, key factories, and types only. Never the manager.
+- src/hooks/* — thin react-query wrappers that read the config hook, build the manager
+  with useMemo, one per CONTRACT.md item 6, with an exported key factory per hook family
+  and mutations invalidating the right keys
+- src/index.ts — the provider, the HttpClient type, hooks, key factories, and other types
+  only. Never the manager, never the config hook.
 
 Then tests/frontend with Vitest + MSW per §7.7: success AND error path per hook,
-onUnhandledRequest: "error", retry: false.
+onUnhandledRequest: "error", retry: false. Wrap test renders in the app's own provider
+with a stub client satisfying HttpClient — not a real fetcher.
 
 Run npx tsc --noEmit, npm run lint, npm run test, npm run build. Paste all four.
 ```
@@ -282,9 +288,11 @@ Run npx tsc --noEmit, npm run lint, npm run test, npm run build. Paste all four.
 **Verify:** all four pass; `dist/index.d.ts` exists; no `any` on any request/response type.
 
 **Review for:** `react` accidentally in `dependencies` instead of `peerDependencies` (causes
-two-copies-of-React bugs in hosts that are miserable to debug); the manager leaking through
-`index.ts`; `types.ts` drifting from the actual serializer output — check field by field
-against Phase 4, since this is where the two halves silently diverge.
+two-copies-of-React bugs in hosts that are miserable to debug); the manager or the config
+hook (`useXConfig`) leaking through `index.ts`; the manager built as a static class instead
+of constructed via `useMemo` from the injected client; `types.ts` drifting from the actual
+serializer output — check field by field against Phase 4, since this is where the two
+halves silently diverge.
 
 ### Phase 6 — Playground
 

@@ -102,17 +102,28 @@ When asked to add a new app package, follow this protocol exactly, in order. Mos
    "notifications_app".msg = "Import app packages only from core/ or config/ — INTEGRATION-GUIDE.md §4"
    ```
 
-10. **Import its hooks where needed**, from the package's single entrypoint (`import { useNotifications } from "notifications-app"`) — never reach past that into an internal path like `notifications-app/dist/api/manager`.
+10. **Mount its provider** in `frontend/app/providers.tsx`, passing the host's own client and, if the app's README suggests a non-default mount path, its `basePath` prop — the SDK-to-host client contract (`APP-DESIGN.md` §12):
+    ```tsx
+    // frontend/app/providers.tsx
+    import { NotificationsProvider } from "notifications-app";
+    import { apiClient } from "@/lib/api-client";
 
-11. **Rebuild, don't just restart.** Installing or upgrading changes `uv.lock`/`package-lock.json`, which changes what's baked into the Docker image:
+    // ... inside the existing Providers component, nested under QueryClientProvider:
+    <NotificationsProvider client={apiClient}>{children}</NotificationsProvider>
+    ```
+    Skip this step and every hook from the app throws immediately — the config hook a hook calls internally is written to fail loudly rather than silently pass `undefined` through to a `fetch` call.
+
+11. **Import its hooks where needed**, from the package's single entrypoint (`import { useNotifications } from "notifications-app"`) — never reach past that into an internal path like `notifications-app/dist/api/manager`.
+
+12. **Rebuild, don't just restart.** Installing or upgrading changes `uv.lock`/`package-lock.json`, which changes what's baked into the Docker image:
     ```bash
     docker compose up --build
     ```
     In production this is what `deploy-prod.sh`'s `build --pull` step exists for. **A restart without a rebuild is the single most common reason "I installed the package but it's not there."**
 
-12. **Update `CLAUDE.md`'s installed-apps list** — §8. This is part of the task, not an optional courtesy.
+13. **Update `CLAUDE.md`'s installed-apps list** — §8. This is part of the task, not an optional courtesy.
 
-13. **Verify before declaring done:** `make check` passes, `/api/schema/swagger-ui/` shows the new endpoints under their expected tags, and the app's own smoke path works (one request to a public endpoint, one to an admin endpoint expecting 403 as a non-admin).
+14. **Verify before declaring done:** `make check` passes, `/api/schema/swagger-ui/` shows the new endpoints under their expected tags, and the app's own smoke path works (one request to a public endpoint, one to an admin endpoint expecting 403 as a non-admin).
 
 Skipping steps or reordering them produces confusing failures — running `migrate` before `INSTALLED_APPS` is updated, mounting URLs for a throttle scope that was never registered, or a frontend hook 404ing because its backend counterpart was never installed.
 
@@ -136,7 +147,7 @@ cd backend && uv remove notifications-app
 cd ../frontend && npm uninstall notifications-app
 ```
 
-Before removing the package: `python manage.py migrate notifications_app zero` to unwind its tables (irreversible — back up first). Then delete its `INSTALLED_APPS` entry, settings dict, throttle scopes, `.env` keys, URL mounts, `banned-api` line, any `core/signals.py` receivers or `core/services/` calls referencing it, any frontend imports, and its entry in `CLAUDE.md`. Grep for both the module name (`notifications_app`) and the package name (`notifications-app`) to catch leftovers.
+Before removing the package: `python manage.py migrate notifications_app zero` to unwind its tables (irreversible — back up first). Then delete its `INSTALLED_APPS` entry, settings dict, throttle scopes, `.env` keys, URL mounts, `banned-api` line, any `core/signals.py` receivers or `core/services/` calls referencing it, any frontend imports (including its provider mount in `frontend/app/providers.tsx` — §2 step 10), and its entry in `CLAUDE.md`. Grep for both the module name (`notifications_app`) and the package name (`notifications-app`) to catch leftovers.
 
 ## 3. URL Routing Architecture
 
@@ -241,6 +252,9 @@ Same rule, mirrored: an installed SDK's hooks never import another installed SDK
 
 ```tsx
 // frontend/app/checkout/page.tsx
+// Assumes CartProvider and PaymentsProvider are already mounted in
+// frontend/app/providers.tsx (§2 step 10) — this page only consumes their hooks,
+// it never mounts a provider itself.
 "use client";
 
 import { useCart, cartKeys } from "cart-app";

@@ -131,7 +131,8 @@ notifications-app/                       # the repo
 │       │   ├── useNotifications.ts
 │       │   └── useSendNotification.ts
 │       ├── api/
-│       │   ├── client.ts                  # low-level shared HTTP client, see §12
+│       │   ├── context.tsx                # provider + config hook — the SDK-to-host
+│       │   │                                client injection point, see §12
 │       │   └── manager.ts                 # typed NotificationsManager — the ONLY place
 │       │                                    raw requests happen, see §12
 │       └── types.ts
@@ -765,7 +766,7 @@ Tests run against real Postgres, locally and in CI. SQLite papers over behaviora
 
 ### 7.7 Frontend testing
 
-Vitest + MSW (Mock Service Worker) is the standard — mock the HTTP layer, never a live backend, so the test suite runs the same in CI as it does locally:
+Vitest + MSW (Mock Service Worker) is the standard — mock the HTTP layer, never a live backend, so the test suite runs the same in CI as it does locally. **Vitest 4.x** is the version pinned by the scaffold's own frontend baseline (`frontend/package.json`, see `BASE-DESIGN.md` §3) — an app package's `devDependencies` should track the same major, not an older one, so a host's `make check` and an installed app's own `npm test` run the same engine. Landing on Vitest 2 or 3 here is a version-drift bug, not a style choice:
 
 ```tsx
 // tests/frontend/useSendNotification.test.tsx
@@ -896,7 +897,15 @@ This is a recommendation, not something that auto-registers — the host creates
 npm install "github:yourorg/notifications-app#v1.4.2:frontend"
 ```
 
-## Usage — import hooks from the package root
+## Usage — mount the provider, then import hooks from the package root
+
+```tsx
+// frontend/app/providers.tsx — one-time wiring, see INTEGRATION-GUIDE.md §2 step 10
+import { NotificationsProvider } from "notifications-app";
+import { apiClient } from "@/lib/api-client";
+
+<NotificationsProvider client={apiClient}>{children}</NotificationsProvider>;
+```
 
 ```tsx
 import { useNotifications, useSendNotification } from "notifications-app";
@@ -910,7 +919,9 @@ function NotificationBell() {
 
 Requires the host's `@tanstack/react-query` `QueryClientProvider` to already be mounted
 (it is, by default, in the scaffold's `frontend/lib/query-client.ts` — see
-`BASE-DESIGN.md` §3). No further frontend configuration needed.
+`BASE-DESIGN.md` §3) and `NotificationsProvider` mounted above wherever these hooks are
+used (see `APP-DESIGN.md` §12's "SDK-to-host client contract"). No further frontend
+configuration needed.
 ````
 
 An app that ships without every one of these sections isn't done — see §11's release checklist, and §10's CI job that fails when the README's declared throttle scopes don't match the scopes actually present in the code.
@@ -1257,6 +1268,7 @@ The `frontend/` half of a package is a small SDK — typed hooks and a fetcher, 
 - **Peer dependencies, not bundled ones.** `react`, `@tanstack/react-query` (or `axios`, whichever the app actually uses) are declared as `peerDependencies`, never as regular `dependencies`. Bundling them would mean a host ends up with two copies of React or two separate `QueryClient` instances — a well-known source of hard-to-debug bugs. The host's own copy, already provided via the scaffold's `frontend/lib/query-client.ts` (see `BASE-DESIGN.md` §3), is what every hook plugs into.
 - **No inter-app frontend dependencies.** Exactly like the backend half (§6), a package's `frontend/` must never depend on or import another reusable app's frontend package. If two apps' UIs need to be combined, that composition happens in the host's own `frontend/` code — see `INTEGRATION-GUIDE.md` §4.
 - **Typed end to end, strictly.** `tsconfig.json` sets `"strict": true`; `types.ts` exports the request/response shapes the hooks use, so a host gets full type safety with no separate `@types` package and no `any`.
+- **The concrete HTTP client is injected, never imported.** An app's `frontend/` can't `import` the host's `frontend/lib/api-client.ts` — that file lives in the host project, not in the publishable package, and the SDK has to build and ship standalone (§1). See "SDK-to-host client contract" below for the mechanism.
 
 ```json
 // frontend/package.json (excerpt)
@@ -1282,33 +1294,111 @@ The `frontend/` half of a package is a small SDK — typed hooks and a fetcher, 
 
 The `exports` map matters: it's what stops a host from importing `notifications-app/dist/api/manager` and coupling itself to internals, which the "one entrypoint" rule exists to prevent. Declaring only `"."` makes the rule enforced by Node's resolver rather than by convention.
 
+### SDK-to-host client contract
+
+Every app's SDK has to make HTTP calls, but its `manager.ts` can't `import { apiClient } from "frontend/lib/api-client"` — that file is project-owned code living in the host's repo (`BASE-DESIGN.md` §3), and an app package builds and ships as a standalone `dist/` with no dependency on any particular host's file layout (§1). The mechanism is runtime dependency injection through a React context, not a shared import: the host constructs its own client — the `apiClient` instance from `frontend/lib/api-client.ts` — and hands it to the SDK via a provider component the SDK itself exports. This needs no shared package, because TypeScript is structurally typed: the SDK declares the shape of client it needs, and the host's concrete `ApiClient` satisfies that shape by having the right methods, not by declaring that it implements anything.
+
+Every app declares that shape in `types.ts`, matching the public surface of `frontend/lib/api-client.ts`'s `ApiClient`:
+
+```ts
+// frontend/src/types.ts (excerpt)
+export interface HttpClient {
+  get<T>(path: string, init?: RequestInit): Promise<T>;
+  post<T>(path: string, body?: unknown, init?: RequestInit): Promise<T>;
+  patch<T>(path: string, body?: unknown, init?: RequestInit): Promise<T>;
+  delete<T>(path: string, init?: RequestInit): Promise<T>;
+}
+```
+
+and ships a provider plus an internal config hook in `api/context.tsx`:
+
+```tsx
+// frontend/src/api/context.tsx
+"use client";
+
+import { createContext, useContext, type ReactNode } from "react";
+import type { HttpClient } from "../types";
+
+interface NotificationsConfig {
+  client: HttpClient;
+  basePath: string;
+}
+
+const NotificationsContext = createContext<NotificationsConfig | null>(null);
+
+export interface NotificationsProviderProps {
+  /** Any client satisfying HttpClient — normally the host's frontend/lib/api-client.ts
+   *  apiClient, passed in as-is. */
+  client: HttpClient;
+  /** Where this app's backend is mounted (INTEGRATION-GUIDE.md §3) — a provider prop, not
+   *  a path baked into the manager, since the mount point is the host's choice, not the
+   *  app's. Defaults to the prefix this app's own README suggests. */
+  basePath?: string;
+  children: ReactNode;
+}
+
+const DEFAULT_BASE_PATH = "/api/v1/notifications";
+
+export function NotificationsProvider({
+  client,
+  basePath = DEFAULT_BASE_PATH,
+  children,
+}: NotificationsProviderProps) {
+  return (
+    <NotificationsContext.Provider value={{ client, basePath }}>
+      {children}
+    </NotificationsContext.Provider>
+  );
+}
+
+export function useNotificationsConfig(): NotificationsConfig {
+  const config = useContext(NotificationsContext);
+  if (!config) {
+    throw new Error(
+      "useNotificationsConfig must be used within <NotificationsProvider>. Mount " +
+        "<NotificationsProvider client={apiClient}> in frontend/app/providers.tsx — " +
+        "see this package's README.",
+    );
+  }
+  return config;
+}
+```
+
+`useNotificationsConfig()` throwing instead of silently returning `undefined` is deliberate: a hook that got `client: undefined` would fail three layers away from the actual mistake, inside a `fetch` call, with an error that says nothing about a missing provider. Both `NotificationsProvider` and the `HttpClient` type are exported from `index.ts`; `useNotificationsConfig` itself is not — a host mounts the provider but never calls the config hook directly.
+
 ### Manager & hook conventions
 
 Every app's frontend has two layers, mirroring the backend's `views.py` + `services.py` split:
 
-- **The manager** (`api/manager.ts`) is a plain class with one static/instance method per backend endpoint. It's the *only* place a raw HTTP call happens — no `fetch`/`axios` call exists anywhere outside this file. It's typed against `types.ts`, and it's never exported from `index.ts` — a host only ever reaches it indirectly, through a hook.
-- **Hooks** (`hooks/*.ts`) are thin `@tanstack/react-query` wrappers around manager methods — never anything more. A query hook wraps `useQuery` with a stable, namespaced `queryKey` (`["notifications", ...]`, per §1.3); a mutation hook wraps `useMutation` and invalidates the relevant query keys on success. Neither swallows loading/error state — every hook returns the standard react-query result object as-is, so the host UI decides how to render `isLoading`/`isError`, rather than the SDK imposing a spinner or toast opinion. If two hooks share logic (e.g. an error-shape normalizer), factor it into an internal, unexported helper.
+- **The manager** (`api/manager.ts`) is a plain class, instance-based — its constructor takes the `HttpClient` and `basePath` a hook read from context, never a static class reaching for a module-level client, since there is no module-level client to reach for (see "SDK-to-host client contract" above). It's the *only* place a raw HTTP call happens — no `fetch`/`axios` call exists anywhere outside this file. It's typed against `types.ts`, and it's never exported from `index.ts` — a host only ever reaches it indirectly, through a hook.
+- **Hooks** (`hooks/*.ts`) are thin `@tanstack/react-query` wrappers around manager methods — never anything more. Each hook calls the app's `useXConfig()` to read the injected `client`/`basePath`, builds the manager with `useMemo` (keyed on `[client, basePath]`, so it isn't reconstructed every render), then wraps `useQuery`/`useMutation` around its methods. A query hook wraps `useQuery` with a stable, namespaced `queryKey` (`["notifications", ...]`, per §1.3); a mutation hook wraps `useMutation` and invalidates the relevant query keys on success. Neither swallows loading/error state — every hook returns the standard react-query result object as-is, so the host UI decides how to render `isLoading`/`isError`, rather than the SDK imposing a spinner or toast opinion. If two hooks share logic (e.g. an error-shape normalizer), factor it into an internal, unexported helper.
 
 ```ts
 // frontend/src/api/manager.ts
-import { apiClient } from "./client";
-import type { Notification, SendNotificationPayload } from "../types";
+import type { HttpClient, Notification, SendNotificationPayload } from "../types";
 
 export class NotificationsManager {
-  static list(): Promise<Notification[]> {
-    return apiClient.get<Notification[]>("/");
+  constructor(
+    private readonly client: HttpClient,
+    private readonly basePath: string,
+  ) {}
+
+  list(): Promise<Notification[]> {
+    return this.client.get<Notification[]>(`${this.basePath}/`);
   }
 
-  static send(payload: SendNotificationPayload): Promise<Notification> {
-    return apiClient.post<Notification>("/send/", payload);
+  send(payload: SendNotificationPayload): Promise<Notification> {
+    return this.client.post<Notification>(`${this.basePath}/send/`, payload);
   }
 }
 ```
 
 ```ts
 // frontend/src/hooks/useNotifications.ts
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { NotificationsManager } from "../api/manager";
+import { useNotificationsConfig } from "../api/context";
 
 export const notificationKeys = {
   all: ["notifications"] as const,
@@ -1316,24 +1406,32 @@ export const notificationKeys = {
 };
 
 export function useNotifications() {
+  const { client, basePath } = useNotificationsConfig();
+  const manager = useMemo(() => new NotificationsManager(client, basePath), [client, basePath]);
+
   return useQuery({
     queryKey: notificationKeys.list(),
-    queryFn: NotificationsManager.list,
+    queryFn: () => manager.list(),
   });
 }
 ```
 
 ```ts
 // frontend/src/hooks/useSendNotification.ts
+import { useMemo } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { NotificationsManager } from "../api/manager";
+import { useNotificationsConfig } from "../api/context";
 import { notificationKeys } from "./useNotifications";
 import type { SendNotificationPayload } from "../types";
 
 export function useSendNotification() {
+  const { client, basePath } = useNotificationsConfig();
+  const manager = useMemo(() => new NotificationsManager(client, basePath), [client, basePath]);
   const queryClient = useQueryClient();
+
   return useMutation({
-    mutationFn: (payload: SendNotificationPayload) => NotificationsManager.send(payload),
+    mutationFn: (payload: SendNotificationPayload) => manager.send(payload),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: notificationKeys.all });
     },
@@ -1343,19 +1441,25 @@ export function useSendNotification() {
 
 ```ts
 // frontend/src/index.ts — the only file a host ever imports from; note the
-// manager is never exported here, only hooks, key factories, and types
+// manager and useNotificationsConfig are never exported here, only the provider,
+// hooks, key factories, and types
+export { NotificationsProvider } from "./api/context";
 export { useNotifications, notificationKeys } from "./hooks/useNotifications";
 export { useSendNotification } from "./hooks/useSendNotification";
-export type { Notification, SendNotificationPayload } from "./types";
+export type { HttpClient, Notification, SendNotificationPayload } from "./types";
 ```
 
 Exporting the `notificationKeys` factory is deliberate: a host sometimes needs to invalidate this app's cache from its own code (after a cross-app action composed in `frontend/app/`, per `INTEGRATION-GUIDE.md` §4). Without the factory, the host hardcodes the key string and silently breaks when the SDK changes it.
+
+### When provider nesting gets unwieldy
+
+Three or four installed apps means three or four providers wrapped around `frontend/app/providers.tsx`'s children — noisy but harmless. If a host installing a fifth SDK finds the nesting itself has become the actual complaint (not any one app's design), the sanctioned escape hatch is a minimal shared `@yourorg/api-contract` package holding only the `HttpClient` interface and one generic provider/hook pair, which every app then declares as a `peerDependency` instead of redeclaring its own copy. Don't build this before that point: a shared package built ahead of knowing its real shape is exactly the premature coupling §1's decoupling discipline exists to prevent. Two or three apps' worth of actual usage is what tells you what the shared interface should contain — guessing it up front is how coupling comes back in through the side door.
 
 ### Frontend security checklist
 
 Parallel to the backend checklist in §9 — a frontend half isn't done until each of these is checked, not assumed:
 
-- No sensitive tokens (auth tokens, API keys) stored in `localStorage`/`sessionStorage` from within the package's own code — rely on the host's existing auth/cookie handling rather than the app inventing its own storage.
+- No sensitive tokens (auth tokens, API keys) stored in `localStorage`/`sessionStorage` from within the package's own code — rely on the host's existing auth/cookie handling rather than the app inventing its own storage. See `BASE-DESIGN.md` §3, "Auth integration" for exactly what the host's own handling consists of (CORS credentials, CSRF trusted origins, the shared `ApiClient`'s credentials default).
 - Manager methods never build a URL by concatenating unescaped user input — values always go through the client's param/body encoding, never string-interpolated into a path.
 - No `dangerouslySetInnerHTML` with unsanitized data, if the package ships any UI components beyond hooks.
 - No hardcoded base URLs, API keys, or secrets anywhere in the package — the base URL always comes from the host's shared client configuration.

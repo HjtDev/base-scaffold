@@ -196,6 +196,36 @@ scaffold: add the dependency, then wire it explicitly in `config/`, never by aut
 See `APP-DESIGN.md` §6 ("Realtime") for how an installed app package contributes routes and
 consumers into this composition.
 
+### Auth integration
+
+**Deliberately excluded, same reasoning as above** — see "Deliberately not included:
+authentication" above. This subsection exists because the base stack, as shipped, is
+*not* configured for it: `CORS_ALLOW_CREDENTIALS` defaults to `False`,
+`CSRF_TRUSTED_ORIGINS` is empty, and `frontend/lib/api-client.ts`'s default
+`ApiClient` instance sends `credentials: "same-origin"`. Cross-origin cookie auth
+silently does nothing until all of the following change together — an installed
+cookie-session auth app's setup instructions (its own `README.md`, per
+`INTEGRATION-GUIDE.md` §2) must say to:
+
+1. Set `CORS_ALLOW_CREDENTIALS=True` in `.env`/`.env.prod`
+   (`backend/config/settings.py`). This is incompatible with a wildcard origin — the
+   browser rejects a wildcard `Access-Control-Allow-Origin` on a credentialed request —
+   so `CORS_ALLOWED_ORIGINS` must stay an explicit list, never `CORS_ALLOW_ALL_ORIGINS`,
+   in every environment where this is on.
+2. Set `CSRF_TRUSTED_ORIGINS` to the frontend's origin(s).
+3. Construct the frontend's `ApiClient` with `credentials: "include"`
+   (`new ApiClient({ credentials: "include" })` in `frontend/lib/api-client.ts`) instead
+   of relying on the `"same-origin"` default — once, at construction, not per call site.
+4. Nothing else to add for CSRF itself: `frontend/lib/api-client.ts` already reads the
+   `csrftoken` cookie and sends it as `X-CSRFToken` on unsafe methods whenever
+   `credentials !== "omit"`. This works specifically because `CSRF_COOKIE_HTTPONLY = False`
+   in `backend/config/settings.py` keeps that cookie JS-readable — don't flip that back to
+   `True`, it would silently break every write request.
+
+See `APP-DESIGN.md` §12's frontend security checklist for the cross-reference: an app's
+own frontend package must rely on this host-level handling rather than inventing its own
+token storage.
+
 ## 4. Toolchain, Dependencies & Environment Strategy
 
 ### 4.1 `uv` is the only Python package manager
