@@ -13,6 +13,7 @@ package, never part of this scaffold — see BASE-DESIGN.md §3.
 """
 
 from pathlib import Path
+from typing import Any
 
 from decouple import Csv, config
 
@@ -131,6 +132,9 @@ REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_THROTTLE_CLASSES": ["rest_framework.throttling.ScopedRateThrottle"],
     "DEFAULT_THROTTLE_RATES": {},  # app installs add their own scopes here
+    # Every DRF-raised error (validation, 401/403/404/405/429, unhandled 500) renders in
+    # the one envelope shape documented in tools/mixins.py and BASE-DESIGN.md §3.
+    "EXCEPTION_HANDLER": "tools.mixins.standard_exception_handler",
 }
 
 SPECTACULAR_SETTINGS = {
@@ -197,13 +201,15 @@ if SENTRY_DSN:
     from sentry_sdk.integrations.django import DjangoIntegration
     from sentry_sdk.integrations.redis import RedisIntegration
 
-    def _traces_sampler(sampling_context: dict) -> float:
+    def _traces_sampler(sampling_context: dict[str, Any]) -> float:
         # Keep /healthz/ out of the transaction sample — it's polled every 30s by every
         # compose healthcheck and carries no useful signal. See BASE-DESIGN.md §8.2.
         asgi_scope = sampling_context.get("asgi_scope", {})
         if asgi_scope.get("path", "").rstrip("/") == "/healthz":
             return 0.0
-        return config("SENTRY_TRACES_SAMPLE_RATE", default=0.1, cast=float)
+        # decouple.config() has no type stubs, so it returns Any even with cast=float —
+        # float(...) is the explicit, narrow fix rather than suppressing the check.
+        return float(config("SENTRY_TRACES_SAMPLE_RATE", default=0.1, cast=float))
 
     sentry_sdk.init(
         dsn=SENTRY_DSN,

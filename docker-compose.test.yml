@@ -1,0 +1,26 @@
+# Ephemeral Postgres + Redis for `make test` — non-default ports so a test run never
+# collides with the dev stack. See docs/BASE-DESIGN.md §5.3 and docs/CORRECTIONS.md #8.
+services:
+  test-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: test_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports: ["55432:5432"]
+    tmpfs: /var/lib/postgresql/data     # RAM-backed: meaningfully faster, nothing to clean up
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  test-redis:
+    image: redis:7-alpine
+    ports: ["56379:6379"]
+    # Not in BASE-DESIGN.md §5.3's block — added so `up -d --wait` (which only waits on
+    # services that declare a healthcheck) actually waits for Redis too. See CORRECTIONS.md #11.
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10

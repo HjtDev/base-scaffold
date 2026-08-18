@@ -118,8 +118,18 @@ Two additions to the tree worth explaining:
 - **`django-jazzmin`** for the admin theme, configured via `JAZZMIN_SETTINGS` in `config/settings.py`.
 - **`django-cors-headers`, `whitenoise`**, preconfigured.
 - **Logging split by environment** — `config/logging.py` returns a colored, human-readable console config when `DEBUG` is on and a `structlog`-based JSON config when it isn't. This is deliberate: JSON in dev is unreadable to a person, and colored text in prod is unparseable by any log aggregator, so a single config is wrong in one environment no matter which you pick. Both configs include a request ID so a single request's log lines can be correlated — the `ContextVar`, the request-ID middleware, and the `logging.Filter` that reads it all live in `config/logging.py` alongside `build_logging_config()`, since all three exist only to serve it. This needs no new dependency: `contextvars` and `logging.Filter` are both stdlib.
+
+  The request-ID middleware is a raw, non-`MiddlewareMixin` async-only class (`async_capable = True`, `sync_capable = False`, `async def __call__`). Those two class attributes only tell Django's `load_middleware` how to build *that* middleware's own wrapper — they say nothing to `inspect.iscoroutinefunction(instance)`, the separate check any *other* middleware wrapping it (e.g. `SecurityMiddleware`) uses to decide whether to `await` it. `MiddlewareMixin`-based middleware calls `inspect.markcoroutinefunction(self)` internally to make itself visible to that check; a raw async-only middleware class has to do the same in its own `__init__`, or every outer middleware calls it without awaiting and crashes on the returned coroutine — see `docs/CORRECTIONS.md` #12, where this broke every real request (ASGI and WSGI both) until fixed. Any future raw async middleware added to `core/` or `config/` needs this same `markcoroutinefunction(self)` call.
 - **Sentry**, initialized in `config/settings.py` behind a `SENTRY_DSN` env var that's empty by default (so it's inert locally and in CI, active the moment a DSN is set). This is included rather than left out because the combination of Celery workers, ASGI concurrency, and N installed third-party app packages makes "an exception happened somewhere and nobody knew" the default failure mode otherwise. Wire the Django, Celery, and Redis integrations, and set `traces_sample_rate` low (0.1) rather than off, so slow-endpoint data exists when someone asks.
 - **`tools/`** — `mixins.py` (shared DRF mixins/error formats), `cache.py` (caching helpers), `crypto.py` (wraps a `Fernet` cipher built from `FERNET_KEY` in `.env`). These exist for `config/` and `core/` to use — see `INTEGRATION-GUIDE.md` §6 for why installed app packages don't reach into this folder.
+
+  `tools/mixins.py`'s `standard_exception_handler` is wired as `REST_FRAMEWORK["EXCEPTION_HANDLER"]`, so every DRF-raised error — not only views that opt into a mixin — renders in one envelope:
+
+  ```json
+  {"error": {"code": "validation_error", "message": "...", "details": {}, "request_id": "..."}}
+  ```
+
+  `details` is always present (`{}` when nothing is field-level, so a client never has to branch on whether the key exists). `request_id` is the same correlation ID `config/logging.py` stamps on every log line. `code` is a stable, machine-readable string clients branch on — adding one is a minor change, renaming one is breaking. The full set: `validation_error`, `parse_error`, `not_authenticated`, `authentication_failed`, `permission_denied`, `not_found`, `method_not_allowed`, `throttled`, `server_error`. An unhandled exception is logged (`logger.exception`) before being turned into a `server_error` envelope, so it still reaches Sentry; `message` on a `server_error` is generic with `DEBUG` off and carries the real exception text with it on. Headers DRF already sets — `Retry-After` on `throttled`, `WWW-Authenticate` on `not_authenticated` — are untouched, since the handler rewrites only `response.data`. This is the shape `APP-DESIGN.md` §4 asks every installed app package to bundle an internal equivalent of.
 - **Frontend baseline** — Next.js App Router (TypeScript, `strict`) with `@tanstack/react-query` and a shared API client already set up in `frontend/lib/`, so an installed frontend app-package's hooks have a consistent client to plug into out of the box instead of every app package bootstrapping its own.
 
 **Deliberately not included: authentication.** `SIMPLE_JWT` or any other auth configuration does not belong in the base scaffold — auth is its own standalone, versioned app package (per `APP-DESIGN.md`), installed into a project the same way payments or notifications would be. This keeps the scaffold auth-agnostic and keeps a project free to swap auth strategies without touching the base at all.
@@ -451,15 +461,29 @@ services:
   test-redis:
     image: redis:7-alpine
     ports: ["56379:6379"]
+    # `up -d --wait` only blocks on services that declare a healthcheck — without one,
+    # test-redis could still be starting when pytest connects.
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 ```
 
 ```make
 test:
 	docker compose -f docker-compose.test.yml up -d --wait
 	cd backend && POSTGRES_HOST=localhost POSTGRES_PORT=55432 \
+	  POSTGRES_DB=test_db POSTGRES_USER=postgres POSTGRES_PASSWORD=postgres \
+	  REDIS_URL=redis://localhost:56379/0 \
 	  uv run pytest -n auto -m "not slow"
 	docker compose -f docker-compose.test.yml down
 ```
+
+The extra `POSTGRES_DB`/`POSTGRES_USER`/`POSTGRES_PASSWORD`/`REDIS_URL` exports above are
+required, not optional: without them the suite falls back to `backend/.env`'s dev credentials
+and `redis://redis:6379/0`, neither of which exists against the `test-db`/`test-redis`
+containers this target just started.
 
 `--reuse-db` (pytest-django) is worth adding to the local loop once migrations stabilize; CI always builds fresh.
 
@@ -987,9 +1011,12 @@ migrations:    ## Create migrations
 	docker compose exec backend python manage.py makemigrations
 superuser:     ## Create a superuser
 	docker compose exec backend python manage.py createsuperuser
-test:          ## Run the host test suite against an ephemeral Postgres
+test:          ## Run the host test suite against an ephemeral Postgres + Redis
 	docker compose -f docker-compose.test.yml up -d --wait
-	cd backend && POSTGRES_HOST=localhost POSTGRES_PORT=55432 uv run pytest -n auto -m "not slow"
+	cd backend && POSTGRES_HOST=localhost POSTGRES_PORT=55432 \
+	  POSTGRES_DB=test_db POSTGRES_USER=postgres POSTGRES_PASSWORD=postgres \
+	  REDIS_URL=redis://localhost:56379/0 \
+	  uv run pytest -n auto -m "not slow"
 	docker compose -f docker-compose.test.yml down
 lint:          ## Ruff + ESLint
 	cd backend && uv run ruff check .

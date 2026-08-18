@@ -19,6 +19,7 @@ from contextvars import ContextVar
 from typing import Any
 
 import structlog
+from asgiref.sync import markcoroutinefunction
 from django.http import HttpRequest, HttpResponse
 
 request_id_var: ContextVar[str] = ContextVar("request_id", default="-")
@@ -50,6 +51,17 @@ class RequestIDMiddleware:
 
     def __init__(self, get_response: Callable[[HttpRequest], Awaitable[HttpResponse]]) -> None:
         self.get_response = get_response
+        # `sync_capable`/`async_capable` only tell Django's *own* `load_middleware` how to
+        # build this middleware's wrapper — they say nothing to a generic
+        # `inspect.iscoroutinefunction(instance)` check, which is what any middleware
+        # WRAPPING this one (e.g. SecurityMiddleware, via django.utils.deprecation's
+        # MiddlewareMixin) uses to decide whether to `await` it. Without this explicit
+        # mark, an instance's `async def __call__` is invisible to that check — Django's
+        # own `MiddlewareMixin` does this same marking internally; a raw, non-Mixin async
+        # middleware has to do it itself, or every outer sync-style middleware calls this
+        # one without awaiting it, crashing on the returned coroutine. Confirmed to break
+        # every real request (ASGI and WSGI both) without this line.
+        markcoroutinefunction(self)
 
     async def __call__(self, request: HttpRequest) -> HttpResponse:
         request_id = _clean_request_id(request.headers.get("X-Request-ID"))

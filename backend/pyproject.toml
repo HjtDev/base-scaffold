@@ -103,6 +103,13 @@ exclude = ["migrations/"]
 module = "*.migrations.*"
 ignore_errors = true
 
+# celery, django_celery_beat, and decouple ship no py.typed marker / stubs package. This
+# silences the import-untyped noise for exactly those three modules — everything else
+# stays under strict, and nothing here widens `exclude` or turns strict off.
+[[tool.mypy.overrides]]
+module = ["celery.*", "django_celery_beat.*", "decouple"]
+ignore_missing_imports = true
+
 [tool.django-stubs]
 django_settings_module = "config.settings"
 
