@@ -40,9 +40,7 @@ def test_e002_when_allowed_hosts_is_empty() -> None:
 
 
 def test_e002_when_allowed_hosts_is_wildcard() -> None:
-    with override_settings(
-        DEBUG=False, SECRET_KEY="a-real-generated-key", ALLOWED_HOSTS=["*"]
-    ):
+    with override_settings(DEBUG=False, SECRET_KEY="a-real-generated-key", ALLOWED_HOSTS=["*"]):
         assert "config.E002" in _error_ids()
 
 
@@ -80,3 +78,49 @@ def test_no_e003_when_the_required_env_key_is_present() -> None:
         patch.dict(os.environ, {"SOME_PRESENT_KEY_XYZ": "value"}),
     ):
         assert "config.E003" not in _error_ids()
+
+
+def test_e004_when_email_host_is_still_the_dev_mailpit_default() -> None:
+    with override_settings(
+        DEBUG=False,
+        SECRET_KEY="a-real-generated-key",
+        ALLOWED_HOSTS=["example.com"],
+        EMAIL_BACKEND="django.core.mail.backends.smtp.EmailBackend",
+        EMAIL_HOST="mailpit",
+    ):
+        assert "config.E004" in _error_ids()
+
+
+def test_e004_when_email_host_is_empty() -> None:
+    with override_settings(
+        DEBUG=False,
+        SECRET_KEY="a-real-generated-key",
+        ALLOWED_HOSTS=["example.com"],
+        EMAIL_BACKEND="django.core.mail.backends.smtp.EmailBackend",
+        EMAIL_HOST="",
+    ):
+        assert "config.E004" in _error_ids()
+
+
+def test_no_e004_with_a_real_email_host() -> None:
+    with override_settings(
+        DEBUG=False,
+        SECRET_KEY="a-real-generated-key",
+        ALLOWED_HOSTS=["example.com"],
+        EMAIL_BACKEND="django.core.mail.backends.smtp.EmailBackend",
+        EMAIL_HOST="smtp.example.com",
+    ):
+        assert "config.E004" not in _error_ids()
+
+
+def test_no_e004_when_email_backend_is_not_smtp() -> None:
+    # A non-smtp backend (console, or a real provider's own backend class) never reads
+    # EMAIL_HOST — firing E004 there would be a false positive.
+    with override_settings(
+        DEBUG=False,
+        SECRET_KEY="a-real-generated-key",
+        ALLOWED_HOSTS=["example.com"],
+        EMAIL_BACKEND="django.core.mail.backends.console.EmailBackend",
+        EMAIL_HOST="",
+    ):
+        assert "config.E004" not in _error_ids()

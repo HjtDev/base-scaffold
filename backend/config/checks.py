@@ -59,4 +59,20 @@ def check_production_settings(app_configs: Any, **kwargs: Any) -> list[CheckMess
             )
         )
 
+    # EMAIL_HOST=mailpit is the dev-correct default (see config/settings.py) — mailpit only
+    # exists behind the `tooling` compose profile, so it's unreachable in production and
+    # this check exists to catch a deploy.prod.env that never overrode it. Only meaningful
+    # for the smtp backend: console/other backends don't read EMAIL_HOST at all, so gating
+    # on EMAIL_BACKEND avoids a false positive there.
+    if settings.EMAIL_BACKEND == "django.core.mail.backends.smtp.EmailBackend" and (
+        not settings.EMAIL_HOST or settings.EMAIL_HOST == "mailpit"
+    ):
+        errors.append(
+            Error(
+                "EMAIL_HOST is empty or still the dev mailpit default, with DEBUG off.",
+                hint="Set EMAIL_HOST to a real SMTP provider for production.",
+                id="config.E004",
+            )
+        )
+
     return errors

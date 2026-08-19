@@ -200,6 +200,19 @@ CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 # No CELERY_BEAT_SCHEDULE here — periodic tasks are host-created PeriodicTask rows,
 # preferably via a data migration in core/, never auto-registered. See BASE-DESIGN.md §6.
 
+# ---------------------------------------------------------------------------- email
+# EMAIL_BACKEND defaults to console in backend/.env.example (dev-correct) and must be set
+# to smtp explicitly in backend/.env.prod (production-correct) — see CORRECTIONS.md. The
+# code default here is smtp/mailpit because that's what's actually correct once a real
+# backend is configured; the console override lives in the env file, not here.
+EMAIL_BACKEND = config("EMAIL_BACKEND", default="django.core.mail.backends.smtp.EmailBackend")
+EMAIL_HOST = config("EMAIL_HOST", default="mailpit")
+EMAIL_PORT = config("EMAIL_PORT", default=1025, cast=int)
+EMAIL_HOST_USER = config("EMAIL_HOST_USER", default="")
+EMAIL_HOST_PASSWORD = config("EMAIL_HOST_PASSWORD", default="")
+EMAIL_USE_TLS = config("EMAIL_USE_TLS", default=False, cast=bool)
+DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL", default="noreply@localhost")
+
 # ---------------------------------------------------------------------------- logging
 LOGGING = build_logging_config(debug=DEBUG)  # from config/logging.py, see §3
 
