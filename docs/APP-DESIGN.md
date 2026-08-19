@@ -1097,7 +1097,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - run: uvx pip-audit --strict -r <(uv export --no-dev --format requirements-txt)
+      # --no-default-groups, NOT --no-dev: --no-dev is only an alias for --no-group dev and
+      # leaves the "test" group (pytest and friends) in the audited set. See BASE-DESIGN.md
+      # §4.2 and CORRECTIONS.md for the same defect in the prod Docker builder.
+      - run: uvx pip-audit --strict --no-deps -r <(uv export --locked --no-default-groups --format requirements-txt)
         shell: bash
         working-directory: backend
 

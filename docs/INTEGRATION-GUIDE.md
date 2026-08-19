@@ -80,6 +80,12 @@ When asked to add a new app package, follow this protocol exactly, in order. Mos
    If the app has extras you need: `uv add "notifications-app[sms] @ git+…@v1.4.2#subdirectory=backend"`.
    This updates `pyproject.toml` *and* `uv.lock`. Both are committed.
 
+   If the ref is a **private** repo, CI's `docker-build` job (`BASE-DESIGN.md` §7) needs an
+   SSH agent from this point on: add a `webfactory/ssh-agent` (or equivalent) step loading a
+   deploy key, and pass `--ssh default` on the `docker buildx build` calls — `backend/Dockerfile.prod`
+   already mounts `--mount=type=ssh` for exactly this, but the mount is optional until the
+   workflow actually forwards an agent (`APP-DESIGN.md` §1.2).
+
 3. **Install the frontend half at the same tag:**
    ```bash
    cd ../frontend

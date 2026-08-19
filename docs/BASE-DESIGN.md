@@ -235,7 +235,7 @@ One tool, one lockfile, one install command — in local dev, in Docker, in CI, 
 
 - Installed app packages come from `git+https://…@vX.Y.Z#subdirectory=backend` refs. `uv.lock` resolves those to exact commit hashes, so "we're on v1.4.2" means the same bytes everywhere. A `requirements.txt` line pointing at a tag does not guarantee that — a tag can be moved.
 - All apps resolve into **one shared environment** (see `APP-DESIGN.md` §1.1). A real resolver that fails loudly on a conflict is worth a great deal compared to `pip`'s first-wins-then-breaks-at-runtime behavior.
-- Dependency groups (PEP 735) keep test/lint tooling out of production images with a single `--no-dev` flag, instead of a second requirements file that drifts.
+- Dependency groups (PEP 735) keep test/lint tooling out of production images with a single `--no-default-groups` flag, instead of a second requirements file that drifts. (Not `--no-dev` — see §4.2's note on why that flag alone is not enough.)
 
 ### 4.2 `backend/pyproject.toml`
 
@@ -555,14 +555,29 @@ The host project's CI is smaller than an app package's — it doesn't build whee
 
 ```yaml
 # .github/workflows/ci.yml
+#
+# Requires ZERO configured GitHub repository secrets — a freshly cloned project (and every
+# fork PR) goes green on the first push. SECRET_KEY and FERNET_KEY are generated fresh
+# inside backend-tests rather than read from secrets.*: a value committed to this repo, even
+# in a workflow file, is a value someone eventually copies into a real .env, and this
+# scaffold is copied into every future project. The expected future exception is a
+# private-repo token for installing an app package (APP-DESIGN.md §1.2) — that is a real
+# secret and belongs in secrets.*; adding it later is the documented exception, not a
+# violation of this rule.
 name: CI
 on:
   push: { branches: [main] }
   pull_request:
 
 env:
-  PYTHON_VERSION: "3.14"
+  # PYTHON_VERSION is deliberately not declared here: backend/.python-version is the single
+  # source of truth and astral-sh/setup-uv already reads it — a second declaration is a
+  # second place the version could drift.
   NODE_VERSION: "22"
+  # Tracks the toolchain that writes backend/uv.lock (uv 0.11.19, lockfile revision 3) — see
+  # CLAUDE.md's pinned-versions table and backend/Dockerfile.prod. `uv sync --locked` refuses
+  # a lockfile revision newer than it supports, so this pin is not cosmetic.
+  UV_VERSION: "0.11.19"
 
 jobs:
   backend-quality:
@@ -570,11 +585,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-        with: { enable-cache: true, cache-dependency-glob: backend/uv.lock }
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
       - run: uv sync --locked
         working-directory: backend
       # --locked is the point: it FAILS if pyproject.toml and uv.lock disagree, which is
-      # how a hand-edited dependency line without a re-lock gets caught.
+      # how a hand-edited dependency line without a re-lock gets caught. Plain `uv sync`,
+      # not `--no-default-groups` — this job needs the dev and test tool groups.
       - run: uv run ruff check --output-format=github .
         working-directory: backend
       - run: uv run ruff format --check .
@@ -586,6 +605,8 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
+        # services: does not expand the env: context — this tag must stay a literal in step
+        # with CLAUDE.md's pinned-versions table (Postgres 17).
         image: postgres:17-alpine
         env: { POSTGRES_DB: test_db, POSTGRES_USER: postgres, POSTGRES_PASSWORD: postgres }
         options: >-
@@ -604,19 +625,33 @@ jobs:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       REDIS_URL: redis://localhost:6379/0
-      SECRET_KEY: ci-only-not-a-secret
-      FERNET_KEY: ${{ secrets.CI_FERNET_KEY }}
       ALLOWED_HOSTS: localhost
       DEBUG: "False"
       # Without this, `check --deploy --fail-level WARNING` fails on security.W004 — see
       # CORRECTIONS.md #3 for why the app itself never defaults this value to non-zero.
       SECURE_HSTS_SECONDS: "31536000"
+      # locmem, not console/smtp: config/checks.py's config.E004 rejects an empty or
+      # still-default (`mailpit`) EMAIL_HOST once DEBUG is off, and locmem is the correct
+      # backend for a test run regardless — no message should leave the process at all.
+      EMAIL_BACKEND: django.core.mail.backends.locmem.EmailBackend
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-        with: { enable-cache: true, cache-dependency-glob: backend/uv.lock }
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
       - run: uv sync --locked
         working-directory: backend
+      - name: Generate ephemeral CI keys
+        # SECRET_KEY and FERNET_KEY must NOT be literals in this file — see the workflow's
+        # top comment. Generated with the runner's system python3 (stdlib only), before any
+        # step imports Django settings. A short SECRET_KEY trips security.W009 in the
+        # deployment check below, which is why token_urlsafe(64) is used rather than a
+        # shorter, "obviously fake" literal.
+        run: |
+          echo "SECRET_KEY=$(python3 -c 'import secrets; print(secrets.token_urlsafe(64))')" >> "$GITHUB_ENV"
+          echo "FERNET_KEY=$(python3 -c 'import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())')" >> "$GITHUB_ENV"
       - name: Missing migrations check
         run: uv run python manage.py makemigrations --check --dry-run
         working-directory: backend
@@ -641,6 +676,11 @@ jobs:
         working-directory: frontend
       - run: npm run lint
         working-directory: frontend
+      - run: npm run format:check
+        working-directory: frontend
+        # Backend enforces formatting with `ruff format --check` above; without this step
+        # prettier was only enforced by pre-commit, which is opt-in per clone and therefore
+        # not a real gate.
       - run: npm run test -- --run
         working-directory: frontend
       - run: npm run build
@@ -652,6 +692,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
+      # backend/Dockerfile.prod mounts --mount=type=ssh on its uv sync layers, to support
+      # private git app-package refs without ever putting a credential in a layer
+      # (APP-DESIGN.md §1.2). BuildKit treats that mount as optional by default, so it builds
+      # fine with no agent today. The moment this project installs its first private app
+      # package, add a webfactory/ssh-agent (or equivalent) step here loading a deploy key,
+      # and pass --ssh default on the buildx call below — see INTEGRATION-GUIDE.md §2.
       - name: Build production images (proves the prod path still builds)
         run: |
           docker buildx build -f backend/Dockerfile.prod backend --load -t app-backend:ci
@@ -667,18 +713,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - run: uvx pip-audit --strict -r <(uv export --no-dev --format requirements-txt)
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Audit backend dependencies
+        # --no-default-groups, NOT --no-dev: backend/pyproject.toml sets
+        # [tool.uv] default-groups = ["dev", "test"], and --no-dev is only an alias for
+        # --no-group dev — it would leave pytest/factory-boy/freezegun in the audited set.
+        # --locked fails loudly on a stale lockfile instead of silently auditing last week's
+        # dependencies. --no-deps on pip-audit's side because the export is already fully
+        # resolved with hashes, so re-resolving would be redundant work.
+        run: |
+          uvx pip-audit --strict --no-deps \
+            -r <(uv export --locked --no-default-groups --format requirements-txt)
         shell: bash
         working-directory: backend
       - uses: actions/setup-node@v4
-        with: { node-version: "22" }
+        with:
+          node-version: ${{ env.NODE_VERSION }}
       - run: npm audit --audit-level=high
         working-directory: frontend
 ```
 
 **Why `docker-build` is a job and not an afterthought:** in this architecture, installing an app package changes `uv.lock`, which changes what gets baked into the image. A PR that adds an app can pass every test and still produce an image that fails to build (a native dependency needing a system library, a private git ref CI can't reach). Catching that in CI rather than in `deploy-prod.sh` is worth the two minutes.
 
-**Renovate** (`renovate.json`) keeps the pins fresh: `uv.lock`, `package-lock.json`, the Docker base image digests, GitHub Action versions, pre-commit `rev`s, and — most importantly for this architecture — the `git+…@vX.Y.Z` app package refs. Group patch/minor into a weekly PR; keep majors separate. A pinned-everything architecture without an update bot doesn't stay pinned, it stays *stale*, which is worse.
+**Renovate** (`renovate.json`) keeps the pins fresh: `uv.lock`, `package-lock.json`, the Docker base image digests (pinned automatically — `pinDigests: true`, see §8.1), GitHub Action versions, pre-commit `rev`s, and — most importantly for this architecture — the `git+…@vX.Y.Z` app package refs. Group patch/minor/digest into a weekly PR; keep majors separate. A pinned-everything architecture without an update bot doesn't stay pinned, it stays *stale*, which is worse.
 
 ## 8. Docker & Compose (dev / prod)
 
@@ -784,7 +842,7 @@ Notes on the deliberate choices:
 - **`--mount=type=ssh`** supports private app package repos without ever putting a credential in a layer (see `APP-DESIGN.md` §1.2). Build with `docker buildx build --ssh default`, or swap to `--mount=type=secret,id=gh_token` for the token flow.
 - **No migrate on boot.** See §9 for why that's a deploy-script step.
 - **`--proxy-headers`** matters because prod binds to `127.0.0.1` behind nginx; without it every client IP in your logs is the proxy's.
-- **Pin the base image by digest** (`python:3.14-slim@sha256:…`) in a real project and let Renovate bump it. Reproducibility is the whole point of the prod image; a floating tag quietly undermines it.
+- **Base image digests are pinned automatically**, not as a manual step: `renovate.json` sets `pinDigests: true`, so Renovate opens a PR converting `python:3.14-slim` (and every other base image in the repo — both frontend Dockerfiles, `ghcr.io/astral-sh/uv:0.11`, the compose service images) to `python:3.14-slim@sha256:…` shortly after this workflow first runs, and keeps the digest current from then on. Reproducibility is the whole point of the prod image; a floating tag quietly undermines it. The trade-off — a base image only gets security patches via a Renovate PR, not silently on rebuild — is acceptable only because Renovate is actually running; a project that disables it should drop the digest pins too, or it sits on a frozen image indefinitely.
 - **Worker count** comes from `$UVICORN_WORKERS`, uvicorn's own env var, set per-environment in compose rather than hardcoded — so the same image runs correctly on a 2-core VPS and a 16-core box.
 
 **`backend/Dockerfile`** (dev) — same builder, but keeps dev/test groups and runs the autoreloading server:
