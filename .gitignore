@@ -4,23 +4,26 @@
 # .python-version is COMMITTED too — it pins what CI and Docker provision.
 
 # ---------------------------------------------------------------- Python
+# setuptools artifact patterns are anchored to /backend/ where they'd otherwise be
+# unanchored and match unrelated directories under frontend/ — e.g. bare `lib/` silently
+# excluded frontend/lib/ (api-client.ts, query-client.ts) from git entirely. `build/` and
+# `dist/` are left unanchored: both ecosystems legitimately produce them. See
+# docs/CORRECTIONS.md.
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
 build/
-develop-eggs/
+/backend/develop-eggs/
 dist/
-downloads/
-eggs/
+/backend/downloads/
+/backend/eggs/
 .eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
+/backend/parts/
+/backend/sdist/
+/backend/var/
+/backend/wheels/
 *.egg-info/
 .installed.cfg
 *.egg
@@ -28,9 +31,9 @@ MANIFEST
 
 # uv / venv — never SQLite (docs/BASE-DESIGN.md §3: Postgres only, including tests)
 .venv/
-env/
-venv/
-ENV/
+/backend/env/
+/backend/venv/
+/backend/ENV/
 
 # ---------------------------------------------------------------- tool caches & coverage
 .ruff_cache/
