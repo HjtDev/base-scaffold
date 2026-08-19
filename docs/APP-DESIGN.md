@@ -1097,7 +1097,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - run: uvx pip-audit --strict -r <(uv export --no-dev --format requirements-txt)
+      # --no-default-groups, NOT --no-dev: --no-dev is only an alias for --no-group dev and
+      # leaves the "test" group (pytest and friends) in the audited set. See BASE-DESIGN.md
+      # §4.2 and CORRECTIONS.md for the same defect in the prod Docker builder.
+      # --no-hashes: with hashes present, pip-audit's internal pip install switches into
+      # hash-checking mode, which is fragile against uv.lock/PyPI hash drift and is
+      # redundant anyway — hash integrity is already uv's job via `uv sync --locked`. See
+      # docs/CORRECTIONS.md for the real-runner failure this was found from.
+      - run: uvx pip-audit --strict --no-deps -r <(uv export --locked --no-default-groups --no-hashes --format requirements-txt)
         shell: bash
         working-directory: backend
 

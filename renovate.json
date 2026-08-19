@@ -1,0 +1,43 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "description": "BASE-DESIGN.md §7: keeps this pinned-everything scaffold from going stale. Digests are pinned (pinDigests) so base-image security patches arrive only via a Renovate PR rather than silently on rebuild — that trade-off is acceptable only because Renovate is actually running here. A project that disables Renovate should drop the digest pins rather than sit on a frozen base image indefinitely.",
+  "enabledManagers": [
+    "pep621",
+    "npm",
+    "dockerfile",
+    "docker-compose",
+    "github-actions",
+    "pre-commit",
+    "custom.regex"
+  ],
+  "pre-commit": {
+    "enabled": true
+  },
+  "pinDigests": true,
+  "lockFileMaintenance": {
+    "enabled": true,
+    "extends": ["schedule:weekly"],
+    "groupName": "weekly dependency updates"
+  },
+  "packageRules": [
+    {
+      "description": "Group patch/minor/digest/pin updates into one weekly PR. Majors are deliberately excluded so each gets its own PR and gets read.",
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
+      "groupName": "weekly dependency updates",
+      "extends": ["schedule:weekly"]
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Track git+https://github.com/<org>/<app>@vX.Y.Z app-package refs in backend/pyproject.toml — INTEGRATION-GUIDE.md §2. None installed in this scaffold yet; this is the hook that makes a future one bump automatically.",
+      "fileMatch": ["^backend/pyproject\\.toml$"],
+      "matchStrings": [
+        "git\\+https://github\\.com/(?<depName>[^/]+/[^.]+)\\.git@(?<currentValue>v[0-9.]+)#subdirectory=backend"
+      ],
+      "datasourceTemplate": "github-tags",
+      "versioningTemplate": "semver"
+    }
+  ]
+}

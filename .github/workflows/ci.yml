@@ -1,0 +1,206 @@
+# BASE-DESIGN.md §7. This workflow requires ZERO configured GitHub repository secrets — a
+# freshly cloned project (and every fork PR) goes green on the first push. `SECRET_KEY` and
+# `FERNET_KEY` are generated fresh inside the backend-tests job rather than read from
+# `secrets.*`, on purpose: a value committed to this repo (even in a workflow file) is a
+# value someone eventually copies into a real `.env`, and this scaffold is copied into every
+# future project. The expected future exception is a private-repo token for installing an
+# app package (APP-DESIGN.md §1.2) — that is a real secret and belongs in `secrets.*`; adding
+# it later is not a violation of this rule, it's the documented exception to it.
+name: CI
+on:
+  push: { branches: [main] }
+  pull_request:
+
+env:
+  # PYTHON_VERSION is deliberately not declared here: backend/.python-version is the single
+  # source of truth and astral-sh/setup-uv already reads it — a second declaration is a
+  # second place the version could drift. See docs/CORRECTIONS.md.
+  NODE_VERSION: "22"
+  # Tracks the toolchain that writes backend/uv.lock (uv 0.11.19, lockfile revision 3) — see
+  # CLAUDE.md's pinned-versions table and backend/Dockerfile.prod. `uv sync --locked` refuses
+  # a lockfile revision newer than it supports, so this pin is not cosmetic.
+  UV_VERSION: "0.11.19"
+
+jobs:
+  backend-quality:
+    runs-on: ubuntu-latest
+    env:
+      # mypy's django-stubs plugin calls django.setup() to introspect models, which imports
+      # config/settings.py — every decouple.config(...) call with no default (SECRET_KEY,
+      # ALLOWED_HOSTS, FERNET_KEY, POSTGRES_*, REDIS_URL) raises at import time if unset, and
+      # this job never connects to a real DB/cache, so these are placeholder literals, not
+      # real credentials — see docs/CORRECTIONS.md.
+      SECRET_KEY: mypy-django-plugin-needs-a-value-not-a-real-secret
+      ALLOWED_HOSTS: localhost
+      FERNET_KEY: mypy-only-placeholder-not-a-real-fernet-key
+      POSTGRES_DB: mypy
+      POSTGRES_USER: mypy
+      POSTGRES_PASSWORD: mypy
+      REDIS_URL: redis://localhost:6379/0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - run: uv sync --locked
+        working-directory: backend
+        # --locked is the point: it FAILS if pyproject.toml and uv.lock disagree, which is
+        # how a hand-edited dependency line without a re-lock gets caught. Plain `uv sync`,
+        # not `--no-default-groups` — this job needs the dev and test tool groups.
+      - run: uv run ruff check --output-format=github .
+        working-directory: backend
+      - run: uv run ruff format --check .
+        working-directory: backend
+      - run: uv run mypy .
+        working-directory: backend
+
+  backend-tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        # GitHub Actions does not expand the `env:` context inside `services:` — this tag
+        # must stay a literal in step with CLAUDE.md's pinned-versions table (Postgres 17).
+        image: postgres:17-alpine
+        env: { POSTGRES_DB: test_db, POSTGRES_USER: postgres, POSTGRES_PASSWORD: postgres }
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+        ports: ["5432:5432"]
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 10s
+          --health-timeout 5s --health-retries 5
+        ports: ["6379:6379"]
+    env:
+      POSTGRES_HOST: localhost
+      POSTGRES_DB: test_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      REDIS_URL: redis://localhost:6379/0
+      ALLOWED_HOSTS: localhost
+      DEBUG: "False"
+      # Without this, `check --deploy --fail-level WARNING` fails on security.W004 — see
+      # CORRECTIONS.md #3 for why the app itself never defaults this value to non-zero.
+      SECURE_HSTS_SECONDS: "31536000"
+      # locmem, not console/smtp: config/checks.py's config.E004 rejects an empty or
+      # still-default (`mailpit`) EMAIL_HOST once DEBUG is off, and locmem is the correct
+      # backend for a test run regardless — no message should leave the process at all.
+      EMAIL_BACKEND: django.core.mail.backends.locmem.EmailBackend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - run: uv sync --locked
+        working-directory: backend
+      - name: Generate ephemeral CI keys
+        # SECRET_KEY and FERNET_KEY must NOT be literals in this file — see the workflow's
+        # top comment. Generated with the runner's system python3 (stdlib only), before any
+        # step imports Django settings. A short SECRET_KEY trips security.W009 in the
+        # deployment check below, which is why token_urlsafe(64) rather than something
+        # shorter and "obviously fake" like §7's original literal.
+        run: |
+          echo "SECRET_KEY=$(python3 -c 'import secrets; print(secrets.token_urlsafe(64))')" >> "$GITHUB_ENV"
+          echo "FERNET_KEY=$(python3 -c 'import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())')" >> "$GITHUB_ENV"
+      - name: Missing migrations check
+        run: uv run python manage.py makemigrations --check --dry-run
+        working-directory: backend
+      - name: Django deployment checks
+        run: uv run python manage.py check --deploy --fail-level WARNING
+        working-directory: backend
+      - run: uv run pytest -n auto
+        working-directory: backend
+        env:
+          # Job-level DEBUG=False makes SECURE_SSL_REDIRECT default to True (config/settings.py's
+          # _SECURE_DEFAULT = not DEBUG) — correct for the deploy check above, but Django's test
+          # client makes plain-HTTP requests, so every view under SecurityMiddleware 301-redirects
+          # instead of returning the status the test asserts. The suite tests business logic
+          # (db/cache down -> 503, schema 200), not TLS-redirect enforcement, so this is scoped to
+          # only the pytest step — the deployment check above still runs under the strict default.
+          SECURE_SSL_REDIRECT: "False"
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npx tsc --noEmit
+        working-directory: frontend
+      - run: npm run lint
+        working-directory: frontend
+      - run: npm run format:check
+        working-directory: frontend
+        # Backend enforces formatting with `ruff format --check` above; without this step
+        # prettier was only enforced by pre-commit, which is opt-in per clone and therefore
+        # not a gate at all. See docs/CORRECTIONS.md.
+      - run: npm run test -- --run
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+        env: { NEXT_PUBLIC_API_URL: http://localhost:8000 }
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      # backend/Dockerfile.prod mounts `--mount=type=ssh` on its `uv sync` layers, to support
+      # private git app-package refs without ever putting a credential in a layer
+      # (APP-DESIGN.md §1.2). BuildKit treats that mount as optional by default, so it builds
+      # fine with no agent today. The moment this project installs its first private app
+      # package, add a `webfactory/ssh-agent` (or equivalent) step here loading a deploy key,
+      # and pass `--ssh default` on the buildx call below — see INTEGRATION-GUIDE.md §2.
+      - name: Build production images (proves the prod path still builds)
+        run: |
+          docker buildx build -f backend/Dockerfile.prod backend --load -t app-backend:ci
+          docker buildx build -f frontend/Dockerfile.prod frontend --load -t app-frontend:ci \
+            --build-arg NEXT_PUBLIC_API_URL=http://localhost:8000
+      - name: Smoke-test the backend image boots
+        run: |
+          docker run --rm app-backend:ci python -c "import django; print(django.get_version())"
+
+  security-audit:
+    runs-on: ubuntu-latest
+    continue-on-error: true       # advisory until the noise level is known; then promote
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Audit backend dependencies
+        # --no-default-groups, NOT --no-dev: backend/pyproject.toml sets
+        # [tool.uv] default-groups = ["dev", "test"], and --no-dev is only an alias for
+        # --no-group dev — it would leave pytest/factory-boy/freezegun in the audited set.
+        # --locked fails loudly on a stale lockfile instead of silently auditing last week's
+        # dependencies. --no-deps on pip-audit's side because the export is already fully
+        # resolved, so re-resolving would be redundant work.
+        #
+        # --no-hashes: found empirically on a real run — with hashes present, pip-audit's
+        # internal `pip install --dry-run --report` switches pip into hash-checking mode,
+        # and for at least one wheel (psycopg-binary 3.3.4's cp312 manylinux2014_x86_64
+        # build) the hash uv.lock recorded does not match the file real PyPI currently
+        # serves (confirmed against PyPI's own JSON API — PyPI's copy is the one uv's own
+        # install already trusts via `uv sync --locked` elsewhere in this workflow). Hash
+        # integrity of the resolved set is already uv's job, not pip-audit's; this job only
+        # needs versions to check against the vulnerability database.
+        run: |
+          uvx pip-audit --strict --no-deps \
+            -r <(uv export --locked --no-default-groups --no-hashes --format requirements-txt)
+        shell: bash
+        working-directory: backend
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - run: npm audit --audit-level=high
+        working-directory: frontend
