@@ -2,16 +2,29 @@
 every compose healthcheck and the deploy rollout's readiness poll.
 """
 
+import logging
+
+from django.conf import settings
 from django.core.cache import cache
 from django.db import DatabaseError, connections
 from django.http import HttpRequest, JsonResponse
 from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_GET
 
+logger = logging.getLogger(__name__)
+
 # A single request-scoped constant so the cache round-trip can tell "we wrote this and read
 # it back" apart from "cache.get() returned someone else's stale key by coincidence".
 _HEALTHZ_CACHE_KEY = "healthz-check"
 _HEALTHZ_CACHE_VALUE = "ok"
+
+# /healthz/ is deliberately unauthenticated (see the healthz() docstring), so its response
+# body must never carry more than up/down — a raw exception string routinely includes the
+# internal hostname/port a service failed to reach (confirmed: a real DB-down response here
+# was "failed to resolve host 'db': ..."). Same DEBUG-gated shape as
+# tools/mixins.py's standard_exception_handler: the real detail is always logged
+# server-side, and only surfaced in the response when DEBUG is on. See docs/CORRECTIONS.md.
+_GENERIC_UNAVAILABLE_DETAIL = "unavailable"
 
 
 def _check_database() -> tuple[bool, str]:
@@ -20,7 +33,8 @@ def _check_database() -> tuple[bool, str]:
             cursor.execute("SELECT 1")
             cursor.fetchone()
     except DatabaseError as exc:
-        return False, str(exc)
+        logger.warning("healthz: database check failed", exc_info=exc)
+        return False, str(exc) if settings.DEBUG else _GENERIC_UNAVAILABLE_DETAIL
     return True, "ok"
 
 
@@ -30,7 +44,8 @@ def _check_cache() -> tuple[bool, str]:
         if cache.get(_HEALTHZ_CACHE_KEY) != _HEALTHZ_CACHE_VALUE:
             return False, "round-trip mismatch"
     except Exception as exc:  # any backend failure here means "not healthy"
-        return False, str(exc)
+        logger.warning("healthz: cache check failed", exc_info=exc)
+        return False, str(exc) if settings.DEBUG else _GENERIC_UNAVAILABLE_DETAIL
     return True, "ok"
 
 

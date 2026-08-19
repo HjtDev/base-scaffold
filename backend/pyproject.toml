@@ -42,6 +42,10 @@ test = [
 ]
 
 [tool.uv]
+# Both groups are the right local default. Docker's prod builder must NOT rely on
+# `uv sync --no-dev` to exclude "test" — that flag is only an alias for `--no-group dev`
+# and leaves "test" (pytest, factory-boy, freezegun) installed. Use `--no-default-groups`
+# there instead. See backend/Dockerfile.prod and docs/CORRECTIONS.md.
 default-groups = ["dev", "test"]
 
 # Uncomment ONE of these blocks while developing an app package against this project.

@@ -1,0 +1,90 @@
+# syntax=docker/dockerfile:1.7
+# Production backend image — BASE-DESIGN.md §8.1. Multi-stage, non-root, no migrate on
+# boot (§9 runs migrate/collectstatic post-deploy, once per deploy, not once per replica).
+FROM python:3.14-slim AS builder
+
+# Pinned to the minor that matches backend/uv.lock's own revision (uv 0.11.19 wrote it as
+# `revision = 3`). uv refuses a lockfile revision newer than it supports, so this pin must
+# track the toolchain that maintains the lock, not float independently of it — see
+# CLAUDE.md's pinned-versions table and docs/CORRECTIONS.md.
+COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /uvx /bin/
+
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=0
+# UV_COMPILE_BYTECODE moves .pyc generation to build time — pure win for cold starts.
+# UV_LINK_MODE=copy is REQUIRED with cache mounts: uv's default hardlinks point into the
+# cache mount, which does not exist in the final stage, producing runtime ImportErrors.
+
+WORKDIR /app
+# git is builder-only: it resolves git+https:// app-package refs and has no business in
+# the runtime image. build-essential/libpq-dev/pkg-config build any sdist in the tree.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential libpq-dev pkg-config git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Layer 1: dependencies only. Cached until pyproject.toml/uv.lock actually change.
+# --no-default-groups, NOT --no-dev: backend/pyproject.toml sets
+# [tool.uv] default-groups = ["dev", "test"], and --no-dev is only an alias for
+# --no-group dev — it leaves "test" (pytest, pytest-django, factory-boy, freezegun)
+# installed in what's meant to be the production image. See docs/CORRECTIONS.md.
+# --mount=type=ssh supports private app-package repos with no credential in any layer
+# (build with `docker buildx build --ssh default`); swap for
+# --mount=type=secret,id=gh_token for the token flow. See APP-DESIGN.md §1.2.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=uv.lock,target=uv.lock \
+    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    --mount=type=ssh \
+    uv sync --locked --no-install-project --no-default-groups --no-editable
+
+# Layer 2: the project itself. Invalidated by any code change, which is fine — it's fast.
+# backend/.dockerignore excludes .venv, so this COPY cannot clobber /app/.venv above.
+COPY . /app
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-default-groups --no-editable
+
+# Build-time proof that the test group did not leak in — fails the build loudly instead
+# of shipping a bloated, slightly-less-secure image silently. See docs/CORRECTIONS.md.
+RUN if /app/.venv/bin/python -c "import pytest" 2>/dev/null; then \
+        echo "FATAL: test dependency group leaked into the production image" >&2; \
+        exit 1; \
+    fi
+
+# ------------------------------------------------------------------ runtime
+FROM python:3.14-slim
+
+# curl: the compose healthcheck. postgresql-client: §9's pre-migration pg_dump.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libpq5 postgresql-client curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --uid 10001 appuser
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH="/app/.venv/bin:$PATH"
+
+WORKDIR /app
+COPY --from=builder --chown=appuser:appuser /app /app
+# The chown is load-bearing beyond file access: Docker seeds a fresh named volume from the
+# image path's contents AND ownership, so docker-compose.prod.yml's `media:/app/media`
+# comes up appuser-owned. Drop it and the celery worker can't write uploads.
+RUN mkdir -p /app/logs /app/static /app/staticfiles /app/media \
+    && chown -R appuser:appuser /app/logs /app/static /app/staticfiles /app/media
+
+USER appuser
+EXPOSE 8000
+# No --workers flag here on purpose: uvicorn's CLI is a click command with
+# auto_envvar_prefix="UVICORN", so --workers is read from $UVICORN_WORKERS natively — no
+# shell, no entrypoint script needed, and exec form is what keeps "*" below literal (a
+# shell-form CMD would glob it against the working directory). docker-compose.prod.yml
+# sets UVICORN_WORKERS (default 3). BASE-DESIGN.md §8.1's original code block hardcoded
+# `--workers 3`, contradicting its own "derive from CPU count" note — see CORRECTIONS.md.
+#
+# --proxy-headers matters because prod binds 127.0.0.1 behind nginx; without it every
+# client IP in the logs is the proxy's.
+#
+# Pin the base image by digest (python:3.14-slim@sha256:...) in a real project and let
+# Renovate bump it — reproducibility is the whole point of this image.
+CMD ["uvicorn", "config.asgi:application", \
+     "--host", "0.0.0.0", "--port", "8000", \
+     "--proxy-headers", "--forwarded-allow-ips", "*"]

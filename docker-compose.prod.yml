@@ -1,0 +1,188 @@
+# Production stack — BASE-DESIGN.md §8.2. Deployed by deploy/deploy-prod.sh (§9):
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod build --pull
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --remove-orphans
+# then, ONLY after backend reports healthy, migrate + collectstatic via `exec` — never in
+# the container's boot command (§9 step 5).
+#
+# Requires a root .env.prod (PROJECT_NAME, NEXT_PUBLIC_API_URL, host ports) and
+# backend/.env.prod — both live only on the server; §9's rsync excludes enforce it.
+
+name: ${PROJECT_NAME:?set PROJECT_NAME in the root .env.prod}
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "5" }
+  # Without rotation a long-running prod container fills the disk, and a full disk takes
+  # Postgres down with it.
+
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: ${PROJECT_NAME}_db
+    restart: unless-stopped
+    env_file: [./backend/.env.prod]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    # No `ports:` at all — db is reachable only on the compose network. nginx fronts the
+    # only public traffic; stricter than §8.2's "bound to 127.0.0.1" and there's no reason
+    # to be looser for a service with no legitimate host-side client.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits: { cpus: "2.0", memory: 2G }
+        reservations: { memory: 512M }
+    logging: *logging
+    security_opt: ["no-new-privileges:true"]
+
+  redis:
+    image: redis:7-alpine
+    container_name: ${PROJECT_NAME}_redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: ["redisdata:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 512M }
+        reservations: { memory: 128M }
+    logging: *logging
+    security_opt: ["no-new-privileges:true"]
+
+  backend:
+    container_name: ${PROJECT_NAME}_backend
+    build: { context: ./backend, dockerfile: Dockerfile.prod }
+    restart: unless-stopped
+    env_file: [./backend/.env.prod]
+    environment:
+      # Read natively by uvicorn's CLI (click auto_envvar_prefix="UVICORN") — no shell, no
+      # entrypoint. Derive from the host's CPU count in a real deploy; 3 matches §8.1.
+      UVICORN_WORKERS: ${UVICORN_WORKERS:-3}
+    # Source is baked into the image — NO bind mount (§8.2). media is the one exception:
+    # without a volume, every deploy's container recreate would destroy all user uploads.
+    # staticfiles is deliberately NOT a volume — a named volume is seeded once and then
+    # goes stale across rebuilds; §9 step 5 regenerates it into the container layer on
+    # every deploy instead.
+    volumes: ["media:/app/media"]
+    ports: ["127.0.0.1:${BACKEND_PORT:-8000}:8000"]
+    healthcheck:
+      # backend/.env.prod.example's ALLOWED_HOSTS must include 127.0.0.1 — Django's
+      # CommonMiddleware enforces ALLOWED_HOSTS on every request, healthchecks included.
+      # The X-Forwarded-Proto header (not a settings-level SECURE_REDIRECT_EXEMPT) is what
+      # keeps SECURE_SSL_REDIRECT from 301'ing this plain-HTTP request before it reaches
+      # the view: TRUST_PROXY_SSL_HEADER defaults True in prod, so this header makes
+      # request.is_secure() true exactly the way nginx's real header would — no new
+      # unauthenticated-over-plaintext exemption on the app side, and nothing to remember
+      # to lock down in nginx. `curl -f` doesn't fail on 3xx, so without this the
+      # healthcheck would report healthy without ever running the DB/cache checks. See
+      # docs/CORRECTIONS.md.
+      test: ["CMD", "curl", "-fsS", "-H", "X-Forwarded-Proto: https",
+             "http://127.0.0.1:8000/healthz/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: "2.0", memory: 2G }
+        reservations: { memory: 512M }
+    logging: *logging
+    security_opt: ["no-new-privileges:true"]
+    read_only: false      # Django needs /tmp and staticfiles; use tmpfs if you want true RO
+
+  celery:
+    container_name: ${PROJECT_NAME}_celery
+    build: { context: ./backend, dockerfile: Dockerfile.prod }
+    restart: unless-stopped
+    env_file: [./backend/.env.prod]
+    volumes: ["media:/app/media"]   # tasks touching uploads need the same files
+    command: ["celery", "-A", "config", "worker", "-l", "info", "--concurrency", "4"]
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A config inspect ping -d celery@$$HOSTNAME || exit 1"]
+      interval: 60s
+      timeout: 20s
+      retries: 3
+      start_period: 60s
+    depends_on:
+      # backend not migrating on boot means there's a window, right after a fresh deploy,
+      # where celery could start racing an unmigrated DB. §9 mitigates this by running
+      # `migrate` immediately after backend reports healthy and before real traffic is
+      # routed; `restart: unless-stopped` makes any task that hits it self-healing rather
+      # than fatal. See docs/CORRECTIONS.md.
+      backend: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: "2.0", memory: 2G }
+        reservations: { memory: 512M }
+    logging: *logging
+    security_opt: ["no-new-privileges:true"]
+    read_only: false
+
+  celery-beat:
+    container_name: ${PROJECT_NAME}_celery_beat
+    build: { context: ./backend, dockerfile: Dockerfile.prod }
+    restart: unless-stopped
+    env_file: [./backend/.env.prod]
+    # --pidfile is NOT in BASE-DESIGN.md §8.2's literal command — see docker-compose.yml's
+    # comment and docs/CORRECTIONS.md; celery beat writes no pidfile at all by default, so
+    # the healthcheck below could never pass without it.
+    command: ["celery", "-A", "config", "beat", "-l", "info",
+              "--scheduler", "django_celery_beat.schedulers:DatabaseScheduler",
+              "--pidfile=/tmp/celerybeat.pid"]
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/celerybeat.pid && kill -0 $$(cat /tmp/celerybeat.pid)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+    depends_on:
+      backend: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 512M }
+        reservations: { memory: 128M }
+    logging: *logging
+    security_opt: ["no-new-privileges:true"]
+
+  frontend:
+    container_name: ${PROJECT_NAME}_frontend
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.prod
+      args:
+        # NEXT_PUBLIC_* is inlined into the client bundle at BUILD time, so it can only
+        # arrive as a build arg — which means it can only come from the root env file
+        # (§9 passes it via --env-file .env.prod). Changing it means rebuilding, never
+        # restarting.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?set NEXT_PUBLIC_API_URL in the root .env.prod}
+    restart: unless-stopped
+    ports: ["127.0.0.1:${FRONTEND_PORT:-3000}:3000"]
+    healthcheck:
+      # 127.0.0.1, not localhost — see docker-compose.yml's comment; identical failure
+      # mode on Alpine/musl regardless of dev vs. prod.
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider",
+             "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 1G }
+        reservations: { memory: 256M }
+    logging: *logging
+    security_opt: ["no-new-privileges:true"]
+
+volumes:
+  pgdata:
+  redisdata:
+  media:

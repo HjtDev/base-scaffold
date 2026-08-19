@@ -1,0 +1,166 @@
+# Dev stack — BASE-DESIGN.md §8.2. Prod is docker-compose.prod.yml; the ephemeral test
+# stack used by `make test` is docker-compose.test.yml. These three are never merged
+# (CLAUDE.md: "Dev and prod are separate Dockerfiles and separate compose files").
+#
+# Requires a root .env (cp .env.example .env) for PROJECT_NAME and host ports, and
+# backend/.env (cp backend/.env.example backend/.env) for Django settings and DB creds —
+# see BASE-DESIGN.md §4.4 and the §10 walkthrough. Both are gitignored; compose fails
+# loudly and early if either is missing, which is the point.
+
+name: "${PROJECT_NAME:?set PROJECT_NAME in .env, e.g. cp .env.example .env}"
+
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: ${PROJECT_NAME}_db
+    restart: unless-stopped
+    # backend/.env is the single source of truth for DB credentials — duplicating them
+    # into the root .env would violate §4.4 (compose interpolation only) and drift. Cost:
+    # `docker inspect db` also shows SECRET_KEY/FERNET_KEY; accepted in dev.
+    env_file: [./backend/.env]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    ports: ["${POSTGRES_HOST_PORT:-5432}:5432"]
+    healthcheck:
+      # $$ escapes compose's own interpolation so the CONTAINER's shell expands these —
+      # which only works because env_file above puts them in the container's environment.
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    container_name: ${PROJECT_NAME}_redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: ["redisdata:/data"]
+    ports: ["${REDIS_HOST_PORT:-6379}:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    container_name: ${PROJECT_NAME}_backend
+    build: { context: ./backend, dockerfile: Dockerfile }
+    restart: unless-stopped
+    env_file: [./backend/.env]
+    # Bind mount = hot reload. The container venv lives at /opt/venv
+    # (UV_PROJECT_ENVIRONMENT in backend/Dockerfile), so the host's backend/.venv landing
+    # at /app/.venv (if it exists) is inert — see §8.1's ".venv gotcha".
+    volumes: ["./backend:/app"]
+    ports: ["${BACKEND_PORT:-8000}:8000"]
+    healthcheck:
+      # 127.0.0.1, not localhost: deterministic, and avoids a wasted ::1 attempt first.
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/healthz/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  celery:
+    container_name: ${PROJECT_NAME}_celery
+    build: { context: ./backend, dockerfile: Dockerfile }
+    restart: unless-stopped
+    env_file: [./backend/.env]
+    volumes: ["./backend:/app"]
+    command: ["celery", "-A", "config", "worker", "-l", "info", "--concurrency", "4"]
+    healthcheck:
+      # Docker injects HOSTNAME into the exec environment healthchecks run in, and it
+      # equals socket.gethostname() — what celery derives its default node name
+      # (celery@<hostname>) from. $(hostname) is the portable fallback if a future
+      # runtime ever stops injecting it.
+      test: ["CMD-SHELL", "celery -A config inspect ping -d celery@$$HOSTNAME || exit 1"]
+      interval: 60s
+      timeout: 20s
+      retries: 3
+      start_period: 60s
+    depends_on:
+      backend: { condition: service_healthy }
+
+  celery-beat:
+    container_name: ${PROJECT_NAME}_celery_beat
+    build: { context: ./backend, dockerfile: Dockerfile }
+    restart: unless-stopped
+    env_file: [./backend/.env]
+    volumes: ["./backend:/app"]
+    # --pidfile is NOT in BASE-DESIGN.md §8.2's literal command, but celery beat's
+    # --pidfile default is "no pidfile at all" — without this flag the healthcheck below
+    # can never pass. See docs/CORRECTIONS.md.
+    command: ["celery", "-A", "config", "beat", "-l", "info",
+              "--scheduler", "django_celery_beat.schedulers:DatabaseScheduler",
+              "--pidfile=/tmp/celerybeat.pid"]
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/celerybeat.pid && kill -0 $$(cat /tmp/celerybeat.pid)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+    depends_on:
+      backend: { condition: service_healthy }
+
+  frontend:
+    container_name: ${PROJECT_NAME}_frontend
+    build: { context: ./frontend, dockerfile: Dockerfile }
+    restart: unless-stopped
+    # NEXT_PUBLIC_API_URL comes from frontend/.env.local through the bind mount (§4.4).
+    # Deliberately NOT set here: process env wins over .env files in Next, so setting it
+    # here would silently override the file that's supposed to own it.
+    volumes:
+      - ./frontend:/app
+      # Anonymous volumes so the host's node_modules (possibly built for another OS) and
+      # .next never shadow the image's — same shadowing problem as backend's .venv.
+      # Seeded once; after changing package.json, `docker compose up -d --build frontend`
+      # to refresh them.
+      - /app/node_modules
+      - /app/.next
+    ports: ["${FRONTEND_PORT:-3000}:3000"]
+    healthcheck:
+      # 127.0.0.1, NOT localhost: on Alpine/musl, `localhost` resolves to ::1 first and
+      # BusyBox wget does not fall back to IPv4, while the Next dev server binds
+      # 0.0.0.0 (IPv4 only) — with `localhost` this service is permanently unhealthy.
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider",
+             "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    # No depends_on: backend — /api/health never calls the backend (see the route's own
+    # comment), so a down API must not take the frontend out of rotation or delay its boot.
+
+  # ------------------------------------------------------------------ tooling profile
+  # `docker compose up` stays lean; `docker compose --profile tooling up` adds these.
+  flower:
+    image: mher/flower:2.0
+    container_name: ${PROJECT_NAME}_flower
+    profiles: ["tooling"]
+    restart: unless-stopped
+    env_file: [./backend/.env]
+    # Mirrors config/settings.py's CELERY_BROKER_URL = config(..., default=REDIS_URL) so
+    # flower and Django can never point at different brokers.
+    command: ["sh", "-c", "celery --broker=\"$${CELERY_BROKER_URL:-$$REDIS_URL}\" flower --port=5555"]
+    ports: ["${FLOWER_PORT:-5555}:5555"]
+    depends_on:
+      redis: { condition: service_healthy }
+
+  mailpit:
+    # BASE-DESIGN.md §8.2 originally named "mailhog"; MailHog has been unmaintained since
+    # 2020 and mailpit is its drop-in successor (same 1025/8025 ports). See
+    # docs/CORRECTIONS.md. Wired up via config/settings.py's EMAIL_* keys (EMAIL_HOST
+    # defaults to "mailpit", matching this service name) — flip
+    # backend/.env's EMAIL_BACKEND to the smtp backend to use it.
+    image: axllent/mailpit:v1.21
+    container_name: ${PROJECT_NAME}_mailpit
+    profiles: ["tooling"]
+    restart: unless-stopped
+    ports:
+      - "${MAILPIT_HTTP_PORT:-8025}:8025"   # web UI
+      - "${MAILPIT_SMTP_PORT:-1025}:1025"   # SMTP
+
+volumes:
+  pgdata:
+  redisdata:
