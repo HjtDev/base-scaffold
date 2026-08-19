@@ -24,6 +24,19 @@ env:
 jobs:
   backend-quality:
     runs-on: ubuntu-latest
+    env:
+      # mypy's django-stubs plugin calls django.setup() to introspect models, which imports
+      # config/settings.py — every decouple.config(...) call with no default (SECRET_KEY,
+      # ALLOWED_HOSTS, FERNET_KEY, POSTGRES_*, REDIS_URL) raises at import time if unset, and
+      # this job never connects to a real DB/cache, so these are placeholder literals, not
+      # real credentials — see docs/CORRECTIONS.md.
+      SECRET_KEY: mypy-django-plugin-needs-a-value-not-a-real-secret
+      ALLOWED_HOSTS: localhost
+      FERNET_KEY: mypy-only-placeholder-not-a-real-fernet-key
+      POSTGRES_DB: mypy
+      POSTGRES_USER: mypy
+      POSTGRES_PASSWORD: mypy
+      REDIS_URL: redis://localhost:6379/0
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -102,6 +115,14 @@ jobs:
         working-directory: backend
       - run: uv run pytest -n auto
         working-directory: backend
+        env:
+          # Job-level DEBUG=False makes SECURE_SSL_REDIRECT default to True (config/settings.py's
+          # _SECURE_DEFAULT = not DEBUG) — correct for the deploy check above, but Django's test
+          # client makes plain-HTTP requests, so every view under SecurityMiddleware 301-redirects
+          # instead of returning the status the test asserts. The suite tests business logic
+          # (db/cache down -> 503, schema 200), not TLS-redirect enforcement, so this is scoped to
+          # only the pytest step — the deployment check above still runs under the strict default.
+          SECURE_SSL_REDIRECT: "False"
 
   frontend:
     runs-on: ubuntu-latest
@@ -163,10 +184,19 @@ jobs:
         # --no-group dev — it would leave pytest/factory-boy/freezegun in the audited set.
         # --locked fails loudly on a stale lockfile instead of silently auditing last week's
         # dependencies. --no-deps on pip-audit's side because the export is already fully
-        # resolved with hashes, so re-resolving would be redundant work.
+        # resolved, so re-resolving would be redundant work.
+        #
+        # --no-hashes: found empirically on a real run — with hashes present, pip-audit's
+        # internal `pip install --dry-run --report` switches pip into hash-checking mode,
+        # and for at least one wheel (psycopg-binary 3.3.4's cp312 manylinux2014_x86_64
+        # build) the hash uv.lock recorded does not match the file real PyPI currently
+        # serves (confirmed against PyPI's own JSON API — PyPI's copy is the one uv's own
+        # install already trusts via `uv sync --locked` elsewhere in this workflow). Hash
+        # integrity of the resolved set is already uv's job, not pip-audit's; this job only
+        # needs versions to check against the vulnerability database.
         run: |
           uvx pip-audit --strict --no-deps \
-            -r <(uv export --locked --no-default-groups --format requirements-txt)
+            -r <(uv export --locked --no-default-groups --no-hashes --format requirements-txt)
         shell: bash
         working-directory: backend
       - uses: actions/setup-node@v4
