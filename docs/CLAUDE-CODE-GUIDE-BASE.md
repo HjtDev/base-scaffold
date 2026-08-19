@@ -263,12 +263,15 @@ Create:
   NEXT_PUBLIC_API_URL as a build ARG
 - frontend/Dockerfile — dev, bind-mounted, npm run dev
 - docker-compose.yml — db, redis, backend, frontend, celery, celery-beat; flower and
-  mailhog behind a "tooling" profile; healthchecks on ALL of db/redis/backend/celery/
-  celery-beat/frontend per §8.2; depends_on with condition: service_healthy;
-  container_name from ${PROJECT_NAME}
+  mailpit (not mailhog — see §8.2) behind a "tooling" profile; healthchecks on ALL of
+  db/redis/backend/celery/celery-beat/frontend per §8.2; depends_on with
+  condition: service_healthy; container_name from ${PROJECT_NAME}
 - docker-compose.prod.yml — Dockerfile.prod, no bind mounts, ports bound to 127.0.0.1,
   resource limits, json-file log rotation, no-new-privileges
-- docker-compose.test.yml — ephemeral Postgres + Redis on ports 55432/56379, tmpfs data
+
+docker-compose.test.yml is NOT this phase's work — it was pulled forward to Phase 3
+(CORRECTIONS.md #8) because §5.3's test target needed it before Phase 5 existed. Verify it's
+already correct rather than recreating it.
 
 Then: `docker compose up --build`, wait for every service to report healthy, and paste
 `docker compose ps` showing the health column. Then `docker compose -f docker-compose.prod.yml
@@ -283,7 +286,11 @@ plausible-but-wrong. Specifically check: `UV_LINK_MODE=copy` present (its absenc
 runtime `ImportError`s that only appear in the final stage); the `.venv` shadowing fix in dev;
 prod not mounting source; prod actually running as the non-root user (`docker compose -f
 docker-compose.prod.yml run --rm backend whoami`); healthchecks on all six services, not just
-backend.
+backend. Also check, empirically rather than by reading the spec — §8 shipped with several
+defects that only a real build/run surfaces (see CORRECTIONS.md #16–25): the `frontend`
+healthcheck resolving `localhost` on Alpine/musl, the `celery-beat` healthcheck's pidfile,
+the `uv` image pin against `backend/uv.lock`'s actual revision, and whether `--no-dev` really
+excludes every non-production dependency group.
 
 ### Phase 6 — CI
 
@@ -338,7 +345,11 @@ health gate, not before; `.env` files in the rsync excludes.
 ```
 Phase 8: developer ergonomics.
 
-- Makefile per docs/BASE-DESIGN.md §10.2, with a self-documenting help target
+- Makefile per docs/BASE-DESIGN.md §10.2, with a self-documenting help target — but the
+  compose-stack targets (up/down/logs/shell/migrate/migrations/superuser) already exist as of
+  Phase 5, which is when docker-compose.yml first exists for them to wrap (CORRECTIONS.md
+  #27, same reasoning as pulling docker-compose.test.yml forward to Phase 3). This phase adds
+  what's left: lint/fmt/typecheck/check/deploy.
 - scripts/rename-project.sh per §11.1 — replaces the placeholder project name across
   .env.example, docker-compose*.yml, CLAUDE.md, pyproject.toml, package.json; must be
   idempotent and must print what it changed
@@ -358,8 +369,14 @@ Then run every make target that doesn't need a server and paste the output.
 The phase people skip, and the only one that proves the thing works.
 
 ```
-Phase 9: fresh-clone verification. Do exactly what a new project would do, from a clean
-directory, following README.md literally — no shortcuts, no using knowledge from building it.
+Phase 9: fresh-clone verification. `git clone` the repo into a new directory — not a copy of
+the working tree — and do exactly what a new project would do from there, following
+README.md literally. No shortcuts, no using knowledge from building it, and don't reuse a
+directory that ever had `git add -A`/`git add .` run in it: a `git clone` is what proves
+nothing needed by a build is only sitting on disk uncommitted or silently gitignored (Phase 5
+found exactly this — an unanchored `.gitignore` pattern had excluded `frontend/lib/` for two
+phases without a build ever failing locally). Build both `docker-compose.yml` and
+`docker-compose.prod.yml` from the clone, not just `docker compose up`.
 
 Then report: every step that didn't work as written, every command that needed a flag the
 README omitted, and every place the walkthrough was ambiguous. Fix the README to match

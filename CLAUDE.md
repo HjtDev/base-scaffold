@@ -25,7 +25,9 @@ update it here and in every file it's baked into (`.python-version`, Docker base
 | Python | 3.14 — `.python-version` and every Docker base image (`python:3.14-slim`) |
 | Node | 22 LTS — `node:22-alpine` in Docker, `engines` in `package.json` |
 | Postgres | 17 — dev, test, and prod. Never SQLite |
+| Redis | 7 — `redis:7-alpine` in every compose file |
 | Django | 6+ on ASGI (Uvicorn) |
+| uv | 0.11 — `ghcr.io/astral-sh/uv:0.11` in both backend Dockerfiles. Must track the toolchain that writes `backend/uv.lock` (currently uv 0.11.19, lockfile `revision = 3`) — uv refuses a lockfile revision newer than it supports, so this pin is not cosmetic |
 | Frontend package manager | npm — `package-lock.json` committed, `npm ci` in CI/Docker. Only move to pnpm as a deliberate, recorded decision |
 | Coverage threshold | 80% (`--cov-fail-under=80`) |
 | Sentry | Included by default, wired to `SENTRY_DSN`; empty by default so it's inert in dev/CI and active the moment a DSN is set |

@@ -117,6 +117,7 @@ Two additions to the tree worth explaining:
 - **Celery + Redis** for background jobs needing chaining, retries, or scheduling, with `django-celery-beat`'s `DatabaseScheduler` for periodic tasks (see §6); Django's native `django.tasks` framework for simple one-off jobs (single email, single notification) that don't need Celery's overhead.
 - **`django-jazzmin`** for the admin theme, configured via `JAZZMIN_SETTINGS` in `config/settings.py`.
 - **`django-cors-headers`, `whitenoise`**, preconfigured.
+- **Email**, env-driven via `EMAIL_BACKEND`/`EMAIL_HOST`/`EMAIL_PORT`/`EMAIL_HOST_USER`/`EMAIL_HOST_PASSWORD`/`EMAIL_USE_TLS`/`DEFAULT_FROM_EMAIL` in `config/settings.py`. Code default is the SMTP backend pointed at `mailpit` (the dev-only tooling-profile container, §8.2); `backend/.env.example` ships the console backend live instead, since a plain `docker compose up` (no `--profile tooling`) has no `mailpit` host for the code default to resolve. `config/checks.py`'s `config.E004` fails loudly if `DEBUG=False` and `EMAIL_HOST` is still empty or `mailpit` — the one prod trap a dev-correct code default creates.
 - **Logging split by environment** — `config/logging.py` returns a colored, human-readable console config when `DEBUG` is on and a `structlog`-based JSON config when it isn't. This is deliberate: JSON in dev is unreadable to a person, and colored text in prod is unparseable by any log aggregator, so a single config is wrong in one environment no matter which you pick. Both configs include a request ID so a single request's log lines can be correlated — the `ContextVar`, the request-ID middleware, and the `logging.Filter` that reads it all live in `config/logging.py` alongside `build_logging_config()`, since all three exist only to serve it. This needs no new dependency: `contextvars` and `logging.Filter` are both stdlib.
 
   The request-ID middleware is a raw, non-`MiddlewareMixin` async-only class (`async_capable = True`, `sync_capable = False`, `async def __call__`). Those two class attributes only tell Django's `load_middleware` how to build *that* middleware's own wrapper — they say nothing to `inspect.iscoroutinefunction(instance)`, the separate check any *other* middleware wrapping it (e.g. `SecurityMiddleware`) uses to decide whether to `await` it. `MiddlewareMixin`-based middleware calls `inspect.markcoroutinefunction(self)` internally to make itself visible to that check; a raw async-only middleware class has to do the same in its own `__init__`, or every outer middleware calls it without awaiting and crashes on the returned coroutine — see `docs/CORRECTIONS.md` #12, where this broke every real request (ASGI and WSGI both) until fixed. Any future raw async middleware added to `core/` or `config/` needs this same `markcoroutinefunction(self)` call.
@@ -284,7 +285,16 @@ test = [
 
 [tool.uv]
 default-groups = ["dev", "test"]
+```
 
+Both groups are the right default for local `uv sync`. It's a trap in Docker, though:
+`uv sync --no-dev` is only an alias for `--no-group dev` — with `default-groups` set to both,
+that flag leaves `test` (pytest, pytest-django, factory-boy, freezegun) installed in what's
+meant to be the production image. `backend/Dockerfile.prod`'s builder stage uses
+`--no-default-groups` instead, which disables every default group regardless of what's in
+the list. See §8.1 and `CORRECTIONS.md`.
+
+```toml
 # Uncomment ONE of these blocks while developing an app package against this project.
 # Swap it back to the pinned git ref before committing — see INTEGRATION-GUIDE.md §7.
 # [tool.uv.sources]
@@ -710,7 +720,10 @@ coverage
 # syntax=docker/dockerfile:1.7
 FROM python:3.14-slim AS builder
 
-COPY --from=ghcr.io/astral-sh/uv:0.9 /uv /uvx /bin/
+# Pinned to the minor that matches backend/uv.lock's own revision — uv refuses a lockfile
+# revision newer than it supports, so this pin must track the toolchain that maintains the
+# lock, not float independently of it. See CLAUDE.md's pinned-versions table.
+COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /uvx /bin/
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
@@ -725,16 +738,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Layer 1: dependencies only. Cached until pyproject.toml/uv.lock actually change.
+# --no-default-groups, NOT --no-dev: [tool.uv] default-groups (§4.2) is ["dev", "test"],
+# and --no-dev is only an alias for --no-group dev — it leaves "test" (pytest and friends)
+# installed. See §4.2.
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
     --mount=type=ssh \
-    uv sync --locked --no-install-project --no-dev --no-editable
+    uv sync --locked --no-install-project --no-default-groups --no-editable
 
 # Layer 2: the project itself. Invalidated by any code change, which is fine — it's fast.
 COPY . /app
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-dev --no-editable
+    uv sync --locked --no-default-groups --no-editable
 
 # ------------------------------------------------------------------ runtime
 FROM python:3.14-slim
@@ -755,9 +771,12 @@ RUN mkdir -p /app/logs /app/static /app/staticfiles /app/media \
 
 USER appuser
 EXPOSE 8000
+# No --workers flag: uvicorn's CLI reads it natively from $UVICORN_WORKERS (click
+# auto_envvar_prefix="UVICORN"), so a compose-level `environment: UVICORN_WORKERS: 3`
+# is enough — no shell, no entrypoint script, and exec form keeps "*" below literal.
 CMD ["uvicorn", "config.asgi:application", \
      "--host", "0.0.0.0", "--port", "8000", \
-     "--workers", "3", "--proxy-headers", "--forwarded-allow-ips", "*"]
+     "--proxy-headers", "--forwarded-allow-ips", "*"]
 ```
 
 Notes on the deliberate choices:
@@ -766,16 +785,18 @@ Notes on the deliberate choices:
 - **No migrate on boot.** See §9 for why that's a deploy-script step.
 - **`--proxy-headers`** matters because prod binds to `127.0.0.1` behind nginx; without it every client IP in your logs is the proxy's.
 - **Pin the base image by digest** (`python:3.14-slim@sha256:…`) in a real project and let Renovate bump it. Reproducibility is the whole point of the prod image; a floating tag quietly undermines it.
-- **Worker count** should be derived from the host's CPU count rather than hardcoded to 3 — pass it in as an env var (`UVICORN_WORKERS`) so the same image runs correctly on a 2-core VPS and a 16-core box.
+- **Worker count** comes from `$UVICORN_WORKERS`, uvicorn's own env var, set per-environment in compose rather than hardcoded — so the same image runs correctly on a 2-core VPS and a 16-core box.
 
 **`backend/Dockerfile`** (dev) — same builder, but keeps dev/test groups and runs the autoreloading server:
 
 ```dockerfile
 # syntax=docker/dockerfile:1.7
 FROM python:3.14-slim
-COPY --from=ghcr.io/astral-sh/uv:0.9 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /uvx /bin/
+# UV_PROJECT_ENVIRONMENT puts the venv OUTSIDE the bind mount — see the .venv gotcha below.
 ENV UV_COMPILE_BYTECODE=0 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=0 \
-    PYTHONUNBUFFERED=1 PATH="/app/.venv/bin:$PATH"
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    PYTHONUNBUFFERED=1 PATH="/opt/venv/bin:$PATH"
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential libpq-dev pkg-config git postgresql-client curl \
@@ -788,12 +809,12 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 COPY . /app
 RUN mkdir -p /app/logs /app/static /app/staticfiles /app/media
 EXPOSE 8000
-CMD ["sh", "-c", "python manage.py migrate && python manage.py runserver 0.0.0.0:8000"]
+CMD ["sh", "-c", "python manage.py migrate && exec python manage.py runserver 0.0.0.0:8000"]
 ```
 
-Dev stays single-stage on purpose: with the source bind-mounted, a builder stage buys nothing and costs rebuild time. Dev runs as root deliberately too — bind-mounted files owned by your host user are otherwise unwritable by a container user, which breaks `makemigrations` in the most annoying possible way. That trade is acceptable in dev and unacceptable in prod, which is precisely why they're separate files.
+Dev stays single-stage on purpose: with the source bind-mounted, a builder stage buys nothing and costs rebuild time. Dev runs as root deliberately too — bind-mounted files owned by your host user are otherwise unwritable by a container user, which breaks `makemigrations` in the most annoying possible way. That trade is acceptable in dev and unacceptable in prod, which is precisely why they're separate files. The `exec` before `runserver` matters too: without it, `sh` stays PID 1 and `docker compose down` waits out the full stop timeout on every service using this image instead of runserver receiving `SIGTERM` directly.
 
-**One `.venv` gotcha with bind mounts:** if you bind-mount `./backend:/app` and the container's venv is at `/app/.venv`, your host's `.venv` shadows the container's. Either put the container venv outside the mount (`UV_PROJECT_ENVIRONMENT=/opt/venv`) or add an anonymous volume for `/app/.venv` in compose. The scaffold uses the first option — it's less surprising.
+**One `.venv` gotcha with bind mounts:** if you bind-mount `./backend:/app` and the container's venv is at `/app/.venv`, your host's `.venv` shadows the container's. Either put the container venv outside the mount (`UV_PROJECT_ENVIRONMENT=/opt/venv`) or add an anonymous volume for `/app/.venv` in compose. The scaffold uses the first option, applied above — it's less surprising.
 
 **`frontend/Dockerfile.prod`** — standard Next.js multi-stage, but using `output: "standalone"`:
 
@@ -830,6 +851,22 @@ CMD ["node", "server.js"]
 
 `output: "standalone"` in `next.config.ts` makes Next trace exactly which `node_modules` files the server actually needs and emit them into `.next/standalone`. Copying that instead of the whole `node_modules` typically takes the runner image from ~1.2GB to ~200MB, and it means a vulnerability in a build-only dependency isn't in your production image at all.
 
+**`frontend/Dockerfile`** (dev) — single-stage, bind-mounted, for the same reason as the backend's dev image:
+
+```dockerfile
+# syntax=docker/dockerfile:1.7
+FROM node:22-alpine
+WORKDIR /app
+ENV NEXT_TELEMETRY_DISABLED=1
+COPY package.json package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm npm ci
+COPY . .
+EXPOSE 3000
+CMD ["npm", "run", "dev", "--", "--hostname", "0.0.0.0", "--port", "3000"]
+```
+
+`node_modules` has the same bind-mount-shadowing problem as the backend's `.venv` — `docker-compose.yml` covers it with anonymous volumes over `/app/node_modules` and `/app/.next` rather than an env var, since there's no npm equivalent of `UV_PROJECT_ENVIRONMENT`.
+
 ### 8.2 Compose files
 
 `docker-compose.yml` (dev) and `docker-compose.prod.yml` share the same service list — `db`, `redis`, `backend`, `frontend`, `celery`, `celery-beat`, and optionally `flower` — but differ in what matters:
@@ -840,12 +877,12 @@ CMD ["node", "server.js"]
 | Source | bind-mounted (`./backend:/app`) | baked into the image, no mount |
 | Ports | exposed on all interfaces | bound to `127.0.0.1:<port>` — nginx fronts public traffic |
 | `backend` command | image `CMD` (migrate + runserver) | image `CMD` (`uvicorn`, no migrate) |
-| Dev extras | `debug-toolbar`, `flower`, mailhog | none |
+| Dev extras | `debug-toolbar`, `flower`, mailpit | none |
 | Resource limits | none | `deploy.resources.limits` per service |
 | Log rotation | default | `max-size` / `max-file` per service |
 | `restart` | `unless-stopped` | `unless-stopped` |
 
-**Every service that another service depends on for correctness gets a real healthcheck**, and dependents use `condition: service_healthy`, so `celery` never starts racing a `backend` that hasn't booted. The original version of this scaffold only health-checked `backend`; that leaves a stuck Celery worker or a crashed Next.js server invisible, which is exactly the failure that wakes you up at 3am. All four:
+**Every service that another service depends on for correctness gets a real healthcheck**, and dependents use `condition: service_healthy`, so `celery` never starts racing a `backend` that hasn't booted. The original version of this scaffold only health-checked `backend`; that leaves a stuck Celery worker or a crashed Next.js server invisible, which is exactly the failure that wakes you up at 3am. All six:
 
 ```yaml
 services:
@@ -870,7 +907,10 @@ services:
   backend:
     container_name: ${PROJECT_NAME}_backend
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz/"]
+      # 127.0.0.1, not localhost — see the frontend healthcheck note below; this doesn't
+      # actually break on the backend image (Debian glibc resolves localhost to 127.0.0.1
+      # first), but staying consistent is one fewer thing to remember.
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/healthz/"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -893,8 +933,11 @@ services:
 
   celery-beat:
     container_name: ${PROJECT_NAME}_celery_beat
+    # --pidfile is required, not decoration: celery beat's own default is no pidfile at
+    # all, so the healthcheck below can never pass without it.
     command: ["celery", "-A", "config", "beat", "-l", "info",
-              "--scheduler", "django_celery_beat.schedulers:DatabaseScheduler"]
+              "--scheduler", "django_celery_beat.schedulers:DatabaseScheduler",
+              "--pidfile=/tmp/celerybeat.pid"]
     healthcheck:
       test: ["CMD-SHELL", "test -f /tmp/celerybeat.pid && kill -0 $$(cat /tmp/celerybeat.pid)"]
       interval: 60s
@@ -906,20 +949,35 @@ services:
   frontend:
     container_name: ${PROJECT_NAME}_frontend
     healthcheck:
+      # 127.0.0.1, NOT localhost: on Alpine/musl (node:22-alpine), `localhost` resolves to
+      # ::1 first and BusyBox wget does not fall back to IPv4, while the Next server binds
+      # 0.0.0.0 (IPv4 only) — with `localhost` this service is permanently unhealthy.
+      # Verified empirically; see CORRECTIONS.md.
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider",
-             "http://localhost:3000/api/health"]
+             "http://127.0.0.1:3000/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 30s
 ```
 
-`/healthz/` (in `config/views.py`) should check the things whose failure means "don't send traffic here" — a `SELECT 1` against the DB and a Redis `ping` — and return 503 if either fails. A healthcheck that only proves Python is running will happily report healthy while every request 500s. Keep it unauthenticated, excluded from throttling, and out of the Sentry transaction sample.
+`/healthz/` (in `config/views.py`) should check the things whose failure means "don't send traffic here" — a `SELECT 1` against the DB and a Redis `ping` — and return 503 if either fails. A healthcheck that only proves Python is running will happily report healthy while every request 500s. Keep it unauthenticated, excluded from throttling, and out of the Sentry transaction sample. On failure, log the real exception server-side but never put it in the response body — `db`/`redis` are unreachable-by-name errors that name the internal host (`"failed to resolve host 'db'"`), and an unauthenticated endpoint is exactly the wrong place for that; `_check_database`/`_check_cache` return the generic string `"unavailable"` once `DEBUG` is off, the same DEBUG-gated shape `tools/mixins.py`'s exception handler already uses (see `CORRECTIONS.md`).
+
+The prod healthcheck must also never trigger `SECURE_SSL_REDIRECT`'s 301 — `curl -f` doesn't fail on a 3xx, so an unhandled redirect would report the container healthy without the view's checks ever running. Rather than exempting `/healthz/` from the redirect at the settings level (which would make it reachable over plaintext from anywhere the path is proxied), the healthcheck itself sends `-H "X-Forwarded-Proto: https"`: `TRUST_PROXY_SSL_HEADER` already defaults `True` in prod, so this makes `request.is_secure()` true exactly the way nginx's real header will for actual traffic — no new bypass, just the same trust path every other request already uses. `backend/.env.prod.example`'s `ALLOWED_HOSTS` must include `127.0.0.1` for the same "never actually reaches the view" reason — `CommonMiddleware` enforces it on every request, healthchecks included. See §9 for why nginx itself must not proxy `/healthz/` to the public internet regardless.
 
 Production-only hardening, per service:
 
 ```yaml
   backend:
+    # The one healthcheck that differs from dev: the -H flag is what avoids the
+    # SECURE_SSL_REDIRECT 301 described above, without a settings-level exemption.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-H", "X-Forwarded-Proto: https",
+             "http://127.0.0.1:8000/healthz/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
     deploy:
       resources:
         limits: { cpus: "2.0", memory: 2G }
@@ -935,7 +993,7 @@ Without resource limits a runaway container starves everything else on a shared 
 
 **Container names come from the root `.env`'s `PROJECT_NAME`** (`container_name: ${PROJECT_NAME}_backend`) rather than being hardcoded — that's what keeps this scaffold copy-paste-safe across projects, and it's what `deploy-prod.sh`'s health-check loop (§9) references directly.
 
-Use compose **profiles** for optional dev services (`flower`, `mailhog`, `debug-toolbar` sidecars) so `docker compose up` stays lean and `docker compose --profile tooling up` brings the extras.
+Use compose **profiles** for optional dev services (`flower`, `mailpit`, `debug-toolbar` sidecars) so `docker compose up` stays lean and `docker compose --profile tooling up` brings the extras. `mailpit` (not `mailhog` — MailHog has been unmaintained since 2020; mailpit is its drop-in successor, same 1025/8025 ports) is what `config/settings.py`'s `EMAIL_HOST` default resolves to by service name.
 
 ## 9. Deployment
 
@@ -967,6 +1025,8 @@ Two additions worth making to the original design:
 - **A note on migration ordering.** Steps 3–5 mean the new code is serving traffic *before* migrations run, which is fine for additive migrations and dangerous for destructive ones. For a single-container deploy the practical rule is: make migrations backward-compatible (add columns nullable, deploy, backfill, then drop in a later release) so there's never a window where running code and the schema disagree. Say this out loud in the script's header comment, because it's the kind of thing that's obvious in principle and forgotten under deadline.
 
 Failing loudly and early (missing env file, unhealthy container, failed nginx test, dirty tree) matters more here than anywhere else in this scaffold — a deploy script's whole job is to be the thing that stops a bad rollout, not the thing that quietly ships one.
+
+**nginx must not expose `/healthz/` publicly.** It's unauthenticated by design (§8.2), reports real infrastructure state (DB/cache reachability), and — unlike every other path — the compose healthcheck reaches it with an `X-Forwarded-Proto: https` header that makes Django skip the HTTPS redirect for that one request. That combination is intentional for the healthcheck's loopback call inside the compose network; it is not something a project's nginx config should ever forward from the public internet. Keep the location block internal-only (`allow` the Docker network, `deny all`, or simply don't proxy the path at all) rather than relying on Django alone to gate it — `config/views.py`'s `healthz()` masks the specific DB/cache error string once `DEBUG` is off (see `CORRECTIONS.md`), but it still confirms whether the database or cache is reachable, which is more than an anonymous caller on the internet needs to know.
 
 ## 10. Bootstrapping & Setup Walkthrough
 
