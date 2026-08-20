@@ -1,5 +1,5 @@
 # Ephemeral Postgres + Redis for `make test` — non-default ports so a test run never
-# collides with the dev stack. See docs/BASE-DESIGN.md §5.3 and docs/CORRECTIONS.md #8.
+# collides with the dev stack. See docs/BASE-DESIGN.md §5.3.
 services:
   test-db:
     image: postgres:17-alpine
@@ -17,8 +17,8 @@ services:
   test-redis:
     image: redis:7-alpine
     ports: ["56379:6379"]
-    # Not in BASE-DESIGN.md §5.3's block — added so `up -d --wait` (which only waits on
-    # services that declare a healthcheck) actually waits for Redis too. See CORRECTIONS.md #11.
+    # Added so `up -d --wait` (which only waits on services that declare a healthcheck)
+    # actually waits for Redis too.
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

@@ -40,20 +40,23 @@ If the scaffold itself improves later (a better `Dockerfile`, a new `tools/` hel
 my-client-project/
 ├── .git/                            # single top-level git repository for the whole project
 ├── .gitignore                       # .env*, node_modules, .venv, __pycache__, .next, media/
-├── .dockerignore                    # see §8.1 — must exist, or builds ship .venv/node_modules
-├── .env                             # [project-owned, gitignored] compose-level vars
-├── .env.example                     # [tracked] template for the above
+├── .env.example                     # [tracked] template for compose-level vars
+├── .env.prod.example                # [tracked] template — real .env.prod lives only on the server
 ├── .pre-commit-config.yaml          # ruff, mypy, prettier, eslint — see §5.1
 ├── .python-version                  # e.g. "3.14" — matches the Docker base image
-├── README.md                        # the §10 walkthrough, read once per project on day one
+├── README.md                        # day-one reference — see §10
 ├── CLAUDE.md                        # agent instructions — rendered at clone time, see §10.1
 ├── CLAUDE.md.template               # source rename-project.sh renders CLAUDE.md from, §10.1
+├── renovate.json                    # dependency-update bot config — see §7
 ├── scripts/
 │   └── rename-project.sh            # names the project — see §11.1, run once at clone time
 ├── docs/
 │   ├── APP-DESIGN.md                # copied in at clone time so agents can read them locally
 │   ├── BASE-DESIGN.md
-│   └── INTEGRATION-GUIDE.md
+│   ├── INTEGRATION-GUIDE.md
+│   ├── CLAUDE-CODE-GUIDE-BASE.md    # how this scaffold itself was built — reference only
+│   ├── CLAUDE-CODE-GUIDE-APP.md     # same treatment for an app package — reference only
+│   └── CORRECTIONS.md               # log of repo/spec divergences found after each doc update
 ├── .github/
 │   └── workflows/
 │       └── ci.yml                   # host-project CI, see §7
@@ -68,6 +71,9 @@ my-client-project/
 │   ├── Dockerfile                   # dev image
 │   ├── Dockerfile.prod              # production image, see §8.1
 │   ├── .dockerignore
+│   ├── .env.example
+│   ├── .prettierrc                  # prettier config — see §5.1
+│   ├── .prettierignore
 │   ├── package.json
 │   ├── package-lock.json            # committed; `npm ci` everywhere, never `npm install` in CI
 │   ├── tsconfig.json                # "strict": true
@@ -76,11 +82,15 @@ my-client-project/
 │   ├── vitest.config.ts
 │   ├── app/
 │   │   ├── layout.tsx               # mounts QueryClientProvider
+│   │   ├── page.tsx                 # placeholder — calls /healthz/, shows backend status
+│   │   ├── providers.tsx            # client-component wrapper for layout.tsx's providers
 │   │   └── api/health/route.ts      # frontend healthcheck target, see §8.2
-│   └── lib/
-│       ├── query-client.ts          # shared TanStack Query client — every installed
-│       │                              frontend app-package SDK plugs into this
-│       └── api-client.ts            # shared fetcher: base URL, credentials, error shape
+│   ├── lib/
+│   │   ├── query-client.ts          # shared TanStack Query client — every installed
+│   │   │                              frontend app-package SDK plugs into this
+│   │   └── api-client.ts            # shared fetcher: base URL, credentials, error shape
+│   ├── tests/                       # vitest — at least one real test per lib/ module
+│   └── public/
 └── backend/
     ├── pyproject.toml               # deps, dependency-groups, ruff/mypy/pytest config — §4
     ├── uv.lock                      # COMMITTED — the reproducibility guarantee
@@ -93,15 +103,23 @@ my-client-project/
     ├── conftest.py                  # project-wide pytest fixtures, see §5.2
     ├── config/                      # settings.py, urls.py, asgi.py, wsgi.py, celery.py
     │   ├── settings.py
+    │   ├── urls.py
+    │   ├── asgi.py                  # get_asgi_application() — see "WebSockets" below
+    │   ├── wsgi.py                  # present for tooling that expects it; never served — §3
+    │   ├── celery.py                # Celery app, autodiscovers installed apps' tasks.py
+    │   ├── checks.py                # startup validation system checks — see §4.3
     │   ├── logging.py               # dev=colored console, prod=JSON — see §3
-    │   └── views.py                 # cross-cutting views — the /healthz/ endpoint §8.2 uses
+    │   ├── views.py                 # cross-cutting views — the /healthz/ endpoint §8.2 uses
+    │   └── tests/                   # wiring smoke tests — see §5.4
     ├── core/                        # project-owned integration & glue layer
     │   ├── apps.py                  # AppConfig; ready() imports core/signals.py
     │   ├── signals.py               # inter-app signal listeners
     │   ├── services/                # cross-app business logic orchestrators
     │   ├── views/                   # subclasses/overrides of an installed app's views
-    │   └── tests/                   # tests for signals, services, view overrides
+    │   └── tests/                   # tests for signals, services, view overrides, plus
+    │       └── conftest.py          #   cross-app fixtures using installed apps' factories
     ├── tools/                       # shared utilities — mixins.py, cache.py, crypto.py
+    │   └── tests/                   # crypto round-trip, cache helper, mixins' error shape
     ├── templates/                   # override point for an installed app's templates
     └── locale/
 ```
@@ -110,8 +128,10 @@ No `.gitmodules`, no `apps/` folder, no dynamic settings-composition machinery, 
 
 Two additions to the tree worth explaining:
 
-- **`docs/`** — the three design documents are copied into every project at clone time. Not for humans (who can read them in the template repo) but for agents: Claude Code can read a local file cheaply and reliably, and `CLAUDE.md` pointing at `docs/INTEGRATION-GUIDE.md` is far more likely to actually be followed than a URL.
+- **`docs/`** — the design documents are copied into every project at clone time. Not for humans (who can read them in the template repo) but for agents: Claude Code can read a local file cheaply and reliably, and `CLAUDE.md` pointing at `docs/INTEGRATION-GUIDE.md` is far more likely to actually be followed than a URL. `CORRECTIONS.md` and the two `CLAUDE-CODE-GUIDE-*.md` files travel along for the same reason but describe how *this* scaffold was built, not anything a cloned project needs day to day.
 - **`Makefile`** — a thin, memorable interface over the real commands. Its real value is that `CLAUDE.md` can say "run `make test`" once instead of restating a six-flag `uv run pytest` invocation everywhere, and the invocation can then change in one place.
+
+**No root `.dockerignore`** — only `backend/.dockerignore` and `frontend/.dockerignore` exist; each Dockerfile builds from its own subdirectory as build context, so a root-level file would never apply to either build. See §8.1's code blocks.
 
 ## 3. Pre-Configured Base Stack
 
@@ -124,7 +144,7 @@ Two additions to the tree worth explaining:
 - **Email**, env-driven via `EMAIL_BACKEND`/`EMAIL_HOST`/`EMAIL_PORT`/`EMAIL_HOST_USER`/`EMAIL_HOST_PASSWORD`/`EMAIL_USE_TLS`/`DEFAULT_FROM_EMAIL` in `config/settings.py`. Code default is the SMTP backend pointed at `mailpit` (the dev-only tooling-profile container, §8.2); `backend/.env.example` ships the console backend live instead, since a plain `docker compose up` (no `--profile tooling`) has no `mailpit` host for the code default to resolve. `config/checks.py`'s `config.E004` fails loudly if `DEBUG=False` and `EMAIL_HOST` is still empty or `mailpit` — the one prod trap a dev-correct code default creates.
 - **Logging split by environment** — `config/logging.py` returns a colored, human-readable console config when `DEBUG` is on and a `structlog`-based JSON config when it isn't. This is deliberate: JSON in dev is unreadable to a person, and colored text in prod is unparseable by any log aggregator, so a single config is wrong in one environment no matter which you pick. Both configs include a request ID so a single request's log lines can be correlated — the `ContextVar`, the request-ID middleware, and the `logging.Filter` that reads it all live in `config/logging.py` alongside `build_logging_config()`, since all three exist only to serve it. This needs no new dependency: `contextvars` and `logging.Filter` are both stdlib.
 
-  The request-ID middleware is a raw, non-`MiddlewareMixin` async-only class (`async_capable = True`, `sync_capable = False`, `async def __call__`). Those two class attributes only tell Django's `load_middleware` how to build *that* middleware's own wrapper — they say nothing to `inspect.iscoroutinefunction(instance)`, the separate check any *other* middleware wrapping it (e.g. `SecurityMiddleware`) uses to decide whether to `await` it. `MiddlewareMixin`-based middleware calls `inspect.markcoroutinefunction(self)` internally to make itself visible to that check; a raw async-only middleware class has to do the same in its own `__init__`, or every outer middleware calls it without awaiting and crashes on the returned coroutine — see `docs/CORRECTIONS.md` #12, where this broke every real request (ASGI and WSGI both) until fixed. Any future raw async middleware added to `core/` or `config/` needs this same `markcoroutinefunction(self)` call.
+  The request-ID middleware is a raw, non-`MiddlewareMixin` async-only class (`async_capable = True`, `sync_capable = False`, `async def __call__`). Those two class attributes only tell Django's `load_middleware` how to build *that* middleware's own wrapper — they say nothing to `inspect.iscoroutinefunction(instance)`, the separate check any *other* middleware wrapping it (e.g. `SecurityMiddleware`) uses to decide whether to `await` it. `MiddlewareMixin`-based middleware calls `inspect.markcoroutinefunction(self)` internally to make itself visible to that check; a raw async-only middleware class has to do the same in its own `__init__`, or every outer middleware calls it without awaiting and crashes on the returned coroutine — confirmed empirically: omitting the call broke every real request (ASGI and WSGI both) until fixed. Any future raw async middleware added to `core/` or `config/` needs this same `markcoroutinefunction(self)` call.
 - **Sentry**, initialized in `config/settings.py` behind a `SENTRY_DSN` env var that's empty by default (so it's inert locally and in CI, active the moment a DSN is set). This is included rather than left out because the combination of Celery workers, ASGI concurrency, and N installed third-party app packages makes "an exception happened somewhere and nobody knew" the default failure mode otherwise. Wire the Django, Celery, and Redis integrations, and set `traces_sample_rate` low (0.1) rather than off, so slow-endpoint data exists when someone asks.
 - **`tools/`** — `mixins.py` (shared DRF mixins/error formats), `cache.py` (caching helpers), `crypto.py` (wraps a `Fernet` cipher built from `FERNET_KEY` in `.env`). These exist for `config/` and `core/` to use — see `INTEGRATION-GUIDE.md` §6 for why installed app packages don't reach into this folder.
 
@@ -262,7 +282,7 @@ dependencies = [
     "python-decouple>=3.8,<4.0",
     "whitenoise>=6.8,<7.0",
     "uvicorn[standard]>=0.34,<1.0",
-    "cryptography>=44,<46",
+    "cryptography>=50,<51",
     "structlog>=25,<26",
     "sentry-sdk[django,celery]>=2.20,<3.0",
     # ---- installed app packages get appended here by `uv add`, one line each
@@ -296,7 +316,7 @@ Both groups are the right default for local `uv sync`. It's a trap in Docker, th
 that flag leaves `test` (pytest, pytest-django, factory-boy, freezegun) installed in what's
 meant to be the production image. `backend/Dockerfile.prod`'s builder stage uses
 `--no-default-groups` instead, which disables every default group regardless of what's in
-the list. See §8.1 and `CORRECTIONS.md`.
+the list. See §8.1 for the Dockerfile block.
 
 ```toml
 # Uncomment ONE of these blocks while developing an app package against this project.
@@ -344,7 +364,7 @@ REST_FRAMEWORK = {
 INSTALLED_APPS = [
     # jazzmin MUST precede django.contrib.admin — it overrides the admin templates via
     # Django's app-directories loader, which resolves to the first match in this list.
-    # Reversed, the admin still renders, just silently unthemed — see CORRECTIONS.md #4.
+    # Reversed, the admin still renders, just silently unthemed, with nothing to catch it.
     "jazzmin",
     "django.contrib.admin",
     "rest_framework",
@@ -355,8 +375,8 @@ INSTALLED_APPS = [
     # ---- installed app packages get added here, one line each, per their own README
 ]
 
-# Env-driven, defaulting to "secure unless DEBUG says otherwise" — see CORRECTIONS.md #3
-# for why SECURE_HSTS_SECONDS is the one exception that does NOT inherit that default.
+# Env-driven, defaulting to "secure unless DEBUG says otherwise" — SECURE_HSTS_SECONDS below
+# is the one exception that does NOT inherit that default; see its own comment for why.
 _SECURE_DEFAULT = not DEBUG
 SECURE_SSL_REDIRECT = config("SECURE_SSL_REDIRECT", default=_SECURE_DEFAULT, cast=bool)
 SESSION_COOKIE_SECURE = config("SESSION_COOKIE_SECURE", default=_SECURE_DEFAULT, cast=bool)
@@ -396,7 +416,7 @@ Five `.env` files, each with a tracked `.example`, and a clear rule about which 
 | `backend/.env.prod` | Same keys, production values | No — **lives only on the server**, never synced |
 | `frontend/.env.local` | `NEXT_PUBLIC_API_URL` and friends | No |
 
-There is deliberately **no** `frontend/.env.prod` — `frontend/Dockerfile.prod` takes `NEXT_PUBLIC_API_URL` as a build **ARG** sourced from the root `.env.prod`, not a runtime env file, because `NEXT_PUBLIC_*` is inlined into the client bundle at build time (see `CORRECTIONS.md` #40 for where this originally diverged).
+There is deliberately **no** `frontend/.env.prod` — `frontend/Dockerfile.prod` takes `NEXT_PUBLIC_API_URL` as a build **ARG** sourced from the root `.env.prod`, not a runtime env file, because `NEXT_PUBLIC_*` is inlined into the client bundle at build time.
 
 The "lives only on the server" rule for `.env.prod` files is enforced by `deploy-prod.sh`'s rsync excludes (§9) and is worth keeping strict: the moment production secrets exist on a developer laptop, they exist in that laptop's backups.
 
@@ -577,10 +597,10 @@ on:
   pull_request:
 
 env:
-  # PYTHON_VERSION is deliberately not declared here: backend/.python-version is the single
+  # PYTHON_VERSION is deliberately not declared here: the root .python-version is the single
   # source of truth and astral-sh/setup-uv already reads it — a second declaration is a
   # second place the version could drift.
-  NODE_VERSION: "22"
+  NODE_VERSION: "24"
   # Tracks the toolchain that writes backend/uv.lock (uv 0.11.19, lockfile revision 3) — see
   # CLAUDE.md's pinned-versions table and backend/Dockerfile.prod. `uv sync --locked` refuses
   # a lockfile revision newer than it supports, so this pin is not cosmetic.
@@ -647,8 +667,9 @@ jobs:
       REDIS_URL: redis://localhost:6379/0
       ALLOWED_HOSTS: localhost
       DEBUG: "False"
-      # Without this, `check --deploy --fail-level WARNING` fails on security.W004 — see
-      # CORRECTIONS.md #3 for why the app itself never defaults this value to non-zero.
+      # Without this, `check --deploy --fail-level WARNING` fails on security.W004. The app
+      # itself never defaults this to non-zero (§4.3) — a year of HSTS is effectively
+      # irreversible, so it's set explicitly here rather than inherited.
       SECURE_HSTS_SECONDS: "31536000"
       # locmem, not console/smtp: config/checks.py's config.E004 rejects an empty or
       # still-default (`mailpit`) EMAIL_HOST once DEBUG is off, and locmem is the correct
@@ -775,7 +796,7 @@ jobs:
 
 **Renovate** (`renovate.json`) keeps the pins fresh: `uv.lock`, `package-lock.json`, the Docker base image digests (pinned automatically — `pinDigests: true`, see §8.1), GitHub Action versions, pre-commit `rev`s, and — most importantly for this architecture — the `git+…@vX.Y.Z` app package refs. Group patch/minor/digest into a weekly PR; keep majors separate. A pinned-everything architecture without an update bot doesn't stay pinned, it stays *stale*, which is worse.
 
-**Required vs. advisory status checks:** set `backend-quality`, `backend-tests`, `frontend`, and `docker-build` as required in the branch protection rule for `main`. Leave `security-audit` advisory-only — it already declares `continue-on-error: true` for exactly this reason, but that flag only protects the *workflow run's* overall conclusion, not the individual job's. Confirmed empirically on this repo's first real PR (`docs/CORRECTIONS.md` #39): `gh api .../jobs` reported `security-audit`'s own `conclusion` as `"failure"` — because `pip-audit --strict` correctly found real, unrelated CVEs in a pinned dependency — while the *run's* conclusion was `"success"`. A branch protection rule keys off the individual job's conclusion, so making `security-audit` required would block every PR the moment any dependency anywhere has a known CVE, which is the noisy failure mode `continue-on-error` exists to avoid.
+**Required vs. advisory status checks:** set `backend-quality`, `backend-tests`, `frontend`, and `docker-build` as required in the branch protection rule for `main`. Leave `security-audit` advisory-only — it already declares `continue-on-error: true` for exactly this reason, but that flag only protects the *workflow run's* overall conclusion, not the individual job's. Confirmed empirically on this repo's first real PR: `gh api .../jobs` reported `security-audit`'s own `conclusion` as `"failure"` — because `pip-audit --strict` correctly found real, unrelated CVEs in a pinned dependency — while the *run's* conclusion was `"success"`. A branch protection rule keys off the individual job's conclusion, so making `security-audit` required would block every PR the moment any dependency anywhere has a known CVE, which is the noisy failure mode `continue-on-error` exists to avoid.
 
 **Required-check names are job names, not job IDs' cosmetic wrapper — they're the same string.** Renaming a job (the `<job_id>:` key, e.g. `backend-quality:`) silently un-requires it: GitHub's branch protection matches on the job's display name, so an old required-check entry just stops finding a match and is quietly ignored rather than erroring. Renaming a job in `ci.yml` must be paired with updating the branch protection rule in the same change.
 
@@ -919,12 +940,12 @@ Dev stays single-stage on purpose: with the source bind-mounted, a builder stage
 
 ```dockerfile
 # syntax=docker/dockerfile:1.7
-FROM node:22-alpine AS deps
+FROM node:24-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci
 
-FROM node:22-alpine AS builder
+FROM node:24-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
@@ -935,7 +956,7 @@ ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
-FROM node:22-alpine AS runner
+FROM node:24-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1
 RUN addgroup -g 10001 nodejs && adduser -S -u 10001 -G nodejs nextjs
@@ -954,7 +975,7 @@ CMD ["node", "server.js"]
 
 ```dockerfile
 # syntax=docker/dockerfile:1.7
-FROM node:22-alpine
+FROM node:24-alpine
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY package.json package-lock.json ./
@@ -1048,10 +1069,10 @@ services:
   frontend:
     container_name: ${PROJECT_NAME}_frontend
     healthcheck:
-      # 127.0.0.1, NOT localhost: on Alpine/musl (node:22-alpine), `localhost` resolves to
+      # 127.0.0.1, NOT localhost: on Alpine/musl (node:24-alpine), `localhost` resolves to
       # ::1 first and BusyBox wget does not fall back to IPv4, while the Next server binds
       # 0.0.0.0 (IPv4 only) — with `localhost` this service is permanently unhealthy.
-      # Verified empirically; see CORRECTIONS.md.
+      # Verified empirically.
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider",
              "http://127.0.0.1:3000/api/health"]
       interval: 30s
@@ -1060,7 +1081,7 @@ services:
       start_period: 30s
 ```
 
-`/healthz/` (in `config/views.py`) should check the things whose failure means "don't send traffic here" — a `SELECT 1` against the DB and a Redis `ping` — and return 503 if either fails. A healthcheck that only proves Python is running will happily report healthy while every request 500s. Keep it unauthenticated, excluded from throttling, and out of the Sentry transaction sample. On failure, log the real exception server-side but never put it in the response body — `db`/`redis` are unreachable-by-name errors that name the internal host (`"failed to resolve host 'db'"`), and an unauthenticated endpoint is exactly the wrong place for that; `_check_database`/`_check_cache` return the generic string `"unavailable"` once `DEBUG` is off, the same DEBUG-gated shape `tools/mixins.py`'s exception handler already uses (see `CORRECTIONS.md`).
+`/healthz/` (in `config/views.py`) should check the things whose failure means "don't send traffic here" — a `SELECT 1` against the DB and a Redis `ping` — and return 503 if either fails. A healthcheck that only proves Python is running will happily report healthy while every request 500s. Keep it unauthenticated, excluded from throttling, and out of the Sentry transaction sample. On failure, log the real exception server-side but never put it in the response body — `db`/`redis` are unreachable-by-name errors that name the internal host (`"failed to resolve host 'db'"`), and an unauthenticated endpoint is exactly the wrong place for that; `_check_database`/`_check_cache` return the generic string `"unavailable"` once `DEBUG` is off, the same DEBUG-gated shape `tools/mixins.py`'s exception handler already uses.
 
 The prod healthcheck must also never trigger `SECURE_SSL_REDIRECT`'s 301 — `curl -f` doesn't fail on a 3xx, so an unhandled redirect would report the container healthy without the view's checks ever running. Rather than exempting `/healthz/` from the redirect at the settings level (which would make it reachable over plaintext from anywhere the path is proxied), the healthcheck itself sends `-H "X-Forwarded-Proto: https"`: `TRUST_PROXY_SSL_HEADER` already defaults `True` in prod, so this makes `request.is_secure()` true exactly the way nginx's real header will for actual traffic — no new bypass, just the same trust path every other request already uses. `backend/.env.prod.example`'s `ALLOWED_HOSTS` must include `127.0.0.1` for the same "never actually reaches the view" reason — `CommonMiddleware` enforces it on every request, healthchecks included. See §9 for why nginx itself must not proxy `/healthz/` to the public internet regardless.
 
@@ -1110,9 +1131,9 @@ SSH_KEY_PATH=
 `deploy-prod.sh`, run from the repo root, does — in order:
 
 1. **Validate** `deploy.prod.env` exists with `SERVER_HOST`/`SERVER_USER`/`SERVER_PATH` set; confirm it's being run from the repo root (checks for `docker-compose.prod.yml`); confirm the working tree is clean, **with no override** — deploying a dirty tree is how "it works on my machine" reaches production literally, and since this script rsyncs the working tree rather than a git ref, a clean tree is the only thing that makes "what commit is production running" answerable afterwards (see the `DEPLOYED_VERSION` file, step 2). Untracked files count as dirty too — an untracked file rsyncs exactly like a tracked one.
-   **CI gate**, replacing the original "ideally, that CI is green" (too vague to implement as written — see `CORRECTIONS.md` #46): with `gh` authenticated and an `origin` remote configured, look up the current commit's CI run by SHA and fail if it's missing, still running, or didn't conclude `success`/`skipped` — printing the run URL either way. If `gh` is absent, unauthenticated, or there's no `origin`, the check can't run and is skipped with a note (that's the machine's state, not the commit's). `--skip-ci-check` bypasses it entirely.
-2. **Rsync** the working tree, excluding everything that shouldn't travel: `.git`, `.idea`/`.vscode`, `__pycache__`, `.venv`, `node_modules`, `.next`, `media`, `.env`/`.env.prod`/`.env.local` (those live only on the server), `deploy/deploy.prod.env`, `.mypy_cache`, `.ruff_cache`, `.pytest_cache`, `staticfiles`, `logs`. Immediately after, write a `DEPLOYED_VERSION` file at `$SERVER_PATH` recording the commit SHA, `git describe`, timestamp, and deployer — the payoff for step 1's strict clean-tree check.
-3. **On the server, over SSH:** confirm every required `.env.prod` file exists — **root and `backend/` only** (not `frontend/`: `NEXT_PUBLIC_API_URL` is a frontend build **ARG** sourced from the root `.env.prod`, never a runtime env file frontend reads — see `CORRECTIONS.md` #40) — and fail loudly rather than deploying with a missing config; then `docker compose -f docker-compose.prod.yml --env-file .env.prod build --pull` and `up -d --remove-orphans`. `--env-file` is mandatory on every compose invocation from here on — without it, compose auto-loads a plain `.env` and `PROJECT_NAME:?` either aborts or silently collides with the dev stack's container names.
+   **CI gate**, replacing the original "ideally, that CI is green" (too vague to implement as written): with `gh` authenticated and an `origin` remote configured, look up the current commit's CI run by SHA and fail if it's missing, still running, or didn't conclude `success`/`skipped` — printing the run URL either way. If `gh` is absent, unauthenticated, or there's no `origin`, the check can't run and is skipped with a note (that's the machine's state, not the commit's). `--skip-ci-check` bypasses it entirely.
+2. **Rsync** the working tree, excluding everything that shouldn't travel: `.git`, `.idea`/`.vscode`, `__pycache__`, `.venv`, `node_modules`, `.next`, `media`, `.env`/`.env.prod`/`.env.local` (those live only on the server), `deploy/deploy.prod.env`, `.mypy_cache`, `.ruff_cache`, `.pytest_cache`, `staticfiles`, `logs`, `backups` (step 5 writes here on the server; without this exclude, `rsync --delete` from a developer machine with no local `backups/` would wipe the server's own backup history). Immediately after, write a `DEPLOYED_VERSION` file at `$SERVER_PATH` recording the commit SHA, `git describe`, timestamp, and deployer — the payoff for step 1's strict clean-tree check.
+3. **On the server, over SSH:** confirm every required `.env.prod` file exists — **root and `backend/` only** (not `frontend/`: `NEXT_PUBLIC_API_URL` is a frontend build **ARG** sourced from the root `.env.prod`, never a runtime env file frontend reads) — and fail loudly rather than deploying with a missing config; then `docker compose -f docker-compose.prod.yml --env-file .env.prod build --pull` and `up -d --remove-orphans`. `--env-file` is mandatory on every compose invocation from here on — without it, compose auto-loads a plain `.env` and `PROJECT_NAME:?` either aborts or silently collides with the dev stack's container names.
 4. **Wait for the backend healthcheck** to report healthy (poll `docker inspect --format '{{.State.Health.Status}}'`, bounded retries — fail and dump the last 100 log lines rather than hanging forever).
 5. **Back up the database** — unconditional, before migrating, `pg_dump` run inside the `backend` container (which is why `Dockerfile.prod` installs `postgresql-client` in its runtime stage) and gzipped to `$SERVER_PATH/backups/`. `--skip-backup-db` opts out. A destructive migration with no backup is the one failure mode in this list you cannot recover from.
 6. **Only once healthy and backed up:** run `migrate --noinput` and `collectstatic --noinput` via `docker compose exec` — deliberately *not* in the container's boot command, so a migration runs once per deploy rather than once per replica or restart.
@@ -1124,7 +1145,7 @@ Migration ordering: steps 3–6 mean the new code is serving traffic *before* mi
 
 Failing loudly and early (missing env file, unhealthy container, failed nginx test, dirty tree) matters more here than anywhere else in this scaffold — a deploy script's whole job is to be the thing that stops a bad rollout, not the thing that quietly ships one.
 
-**nginx must not expose `/healthz/` publicly.** It's unauthenticated by design (§8.2), reports real infrastructure state (DB/cache reachability), and — unlike every other path — the compose healthcheck reaches it with an `X-Forwarded-Proto: https` header that makes Django skip the HTTPS redirect for that one request. That combination is intentional for the healthcheck's loopback call inside the compose network; it is not something a project's nginx config should ever forward from the public internet. Keep the location block internal-only (`allow` the Docker network, `deny all`, or simply don't proxy the path at all) rather than relying on Django alone to gate it — `config/views.py`'s `healthz()` masks the specific DB/cache error string once `DEBUG` is off (see `CORRECTIONS.md`), but it still confirms whether the database or cache is reachable, which is more than an anonymous caller on the internet needs to know.
+**nginx must not expose `/healthz/` publicly.** It's unauthenticated by design (§8.2), reports real infrastructure state (DB/cache reachability), and — unlike every other path — the compose healthcheck reaches it with an `X-Forwarded-Proto: https` header that makes Django skip the HTTPS redirect for that one request. That combination is intentional for the healthcheck's loopback call inside the compose network; it is not something a project's nginx config should ever forward from the public internet. Keep the location block internal-only (`allow` the Docker network, `deny all`, or simply don't proxy the path at all) rather than relying on Django alone to gate it — `config/views.py`'s `healthz()` masks the specific DB/cache error string once `DEBUG` is off, but it still confirms whether the database or cache is reachable, which is more than an anonymous caller on the internet needs to know.
 
 ## 10. Bootstrapping & Setup Walkthrough
 
@@ -1192,7 +1213,7 @@ Makefile itself, not just here, so it doesn't rot the next time CI gains a step.
 ```make
 # A thin, memorable interface over the real commands — BASE-DESIGN.md §10.2. Built up phase
 # by phase as its prerequisites landed (Phase 3: test: Phase 5: compose-stack targets; Phase 8:
-# everything below). See docs/CORRECTIONS.md for that history.
+# everything below).
 #
 # `check` is defined as PARITY WITH .github/workflows/ci.yml: every job/step in CI maps to a
 # target below, or is named as a deliberate exclusion. Any new CI step must be mirrored here or
@@ -1222,14 +1243,13 @@ Makefile itself, not just here, so it doesn't rot the next time CI gains a step.
 #   security-audit       pip-audit / npm audit                    EXCLUDED — a network CVE
 #                                                                  lookup, advisory only in CI
 #                                                                  (continue-on-error: true,
-#                                                                  never a required check —
-#                                                                  CORRECTIONS.md #39)
+#                                                                  never a required check)
 #
 # `uv sync --locked` / `npm ci` are deliberately NOT part of `check` — re-installing on every
 # check is slow and, for npm, destructive to node_modules. `make install` is the lock-drift
 # gate: run it after touching pyproject.toml/uv.lock or package.json/package-lock.json.
 .DEFAULT_GOAL := help
-.PHONY: help install up down logs shell migrate migrations superuser \
+.PHONY: help install up down stop ps logs shell migrate migrations superuser backup \
         lint fmt typecheck django-checks test test-fast build check deploy
 
 help:  ## Show this help
@@ -1243,8 +1263,12 @@ install:       ## uv sync --locked + npm ci + install pre-commit hooks
 
 up:            ## Start the dev stack
 	docker compose up --build
-down:          ## Stop the dev stack
+down:          ## Stop AND remove the dev stack's containers/network (use `stop` to keep them)
 	docker compose down
+stop:          ## Stop the dev stack in place — containers/volumes survive, `make up` resumes them
+	docker compose stop
+ps:            ## Show dev stack container status, including the health column
+	docker compose ps
 logs:          ## Tail all logs
 	docker compose logs -f
 shell:         ## Django shell_plus in the backend container
@@ -1255,6 +1279,12 @@ migrations:    ## Create migrations
 	docker compose exec backend python manage.py makemigrations
 superuser:     ## Create a superuser
 	docker compose exec backend python manage.py createsuperuser
+backup:        ## pg_dump the dev database to backups/<PROJECT_NAME>-<timestamp>.sql.gz
+	mkdir -p backups
+	name=$$(grep -m1 '^PROJECT_NAME=' .env 2>/dev/null | cut -d= -f2); \
+	f="backups/$${name:-myproject}-$$(date +%Y%m%d-%H%M%S).sql.gz"; \
+	docker compose exec -T db sh -c 'pg_dump -U "$$POSTGRES_USER" "$$POSTGRES_DB"' | gzip -9 > "$$f"; \
+	echo "Wrote $$f"
 
 lint:          ## Ruff + ESLint + format checks (ruff format --check, prettier --check) — the CI gate
 	cd backend && uv run ruff check . && uv run ruff format --check .
@@ -1295,7 +1325,7 @@ deploy:        ## Deploy to production (pass flags via ARGS, e.g. make deploy AR
 	./deploy/deploy-prod.sh $(ARGS)
 ```
 
-The `check` target is the one that matters: it gives `CLAUDE.md` a single command to name as the definition of done, and it gives a human one command to run before pushing. Unlike its earlier, incomplete form (`docs/CORRECTIONS.md` Open #14/#15), it now actually gates on everything CI does except the two jobs named above as excluded.
+The `check` target is the one that matters: it gives `CLAUDE.md` a single command to name as the definition of done, and it gives a human one command to run before pushing. Its earlier form only ran `lint typecheck test` and never set `DEBUG=False`, so it could pass locally and still fail in CI on the format checks or the deployment checks below; it now actually gates on everything CI does except the two jobs named above as excluded.
 
 ## 11. Ecosystem Tooling
 
@@ -1309,7 +1339,7 @@ hardcoding it — the original hardcoded list here named `docker-compose*.yml` (
 literal; those files interpolate `${PROJECT_NAME}` from `.env` at compose time) and omitted
 `backend/uv.lock`, `frontend/package-lock.json`, `backend/.env.example`, `.env.prod.example`,
 and `frontend/app/layout.tsx`'s `metadata.title` — a gap that broke `uv sync --locked`/`npm ci`
-in a renamed clone until `docs/CORRECTIONS.md` caught it. In practice this covers
+in a renamed clone until an empirical test of a fresh clone caught it. In practice this covers
 `.env.example`, `.env.prod.example`, `backend/.env.example`, `backend/pyproject.toml`,
 `backend/uv.lock`, `frontend/package.json`, `frontend/package-lock.json`, and
 `frontend/app/layout.tsx`, plus rendering the host `CLAUDE.md` from `CLAUDE.md.template`

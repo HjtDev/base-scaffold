@@ -23,10 +23,10 @@ update it here and in every file it's baked into (`.python-version`, Docker base
 | Decision | Value |
 |---|---|
 | Python | 3.14 — `.python-version` and every Docker base image (`python:3.14-slim`) |
-| Node | 22 LTS — `node:22-alpine` in Docker, `engines` in `package.json` |
+| Node | 24 LTS — `node:24-alpine` in Docker, `engines` in `package.json` |
 | Postgres | 17 — dev, test, and prod. Never SQLite |
 | Redis | 7 — `redis:7-alpine` in every compose file |
-| Django | 6+ on ASGI (Uvicorn) |
+| Django | `>=6.0,<6.1` on ASGI (Uvicorn) — a single minor, not open-ended |
 | uv | 0.11 — `ghcr.io/astral-sh/uv:0.11` in both backend Dockerfiles. Must track the toolchain that writes `backend/uv.lock` (currently uv 0.11.19, lockfile `revision = 3`) — uv refuses a lockfile revision newer than it supports, so this pin is not cosmetic |
 | Frontend package manager | npm — `package-lock.json` committed, `npm ci` in CI/Docker. Only move to pnpm as a deliberate, recorded decision |
 | Coverage threshold | 80% (`--cov-fail-under=80`) |
@@ -70,11 +70,9 @@ update it here and in every file it's baked into (`.python-version`, Docker base
 ```
 semantic(<scope>): <short_commit_message>
 
-Dashed description of changes
-
-Add <what was added>
-Remove <what was removed>
-Update <what was changed>
+- Add <what was added>
+- Remove <what was removed>
+- Update <what was changed>
 ```
 
 Rules for it:
@@ -85,9 +83,10 @@ Rules for it:
   covers the change; if a change genuinely spans everything, it's probably two commits.
 - `<short_commit_message>` is imperative mood, lowercase, no trailing period, under 60 chars
   — "add uv project config", not "Added uv project config."
-- Keep the literal line `Dashed description of changes` as the body's first line, then a
-  blank line, then the bullets.
-- One bullet per meaningful change, each starting with an imperative verb (`Add`, `Remove`,
+- A blank line after the title, then the bullets directly — no literal header line above
+  them.
+- Every bullet is a literal `- `-prefixed line, one per line — not a bare line, not a `*`.
+  One bullet per meaningful change, each starting with an imperative verb (`Add`, `Remove`,
   `Update`, `Move`, `Rename`, `Fix`, `Pin`, `Enable`, `Disable`). Capitalised, no trailing
   period. Group trivia rather than listing every file — bullets describe changes, not a
   file inventory.
@@ -100,11 +99,9 @@ Example:
 ```
 chore(backend): add uv project config and tooling baseline
 
-Dashed description of changes
-
-Add backend/pyproject.toml with dependencies, dev/test dependency groups and uv default-groups
-Add ruff, mypy, pytest and coverage configuration
-Add commented banned-api table enforcing the core/-only app import rule
-Add MANIFEST.in, .python-version and .dockerignore
-Update .gitignore to cover .venv, .ruff_cache and .mypy_cache
+- Add backend/pyproject.toml with dependencies, dev/test dependency groups and uv default-groups
+- Add ruff, mypy, pytest and coverage configuration
+- Add commented banned-api table enforcing the core/-only app import rule
+- Add MANIFEST.in, .python-version and .dockerignore
+- Update .gitignore to cover .venv, .ruff_cache and .mypy_cache
 ```

@@ -1,7 +1,7 @@
-"""Regression guard for CORRECTIONS.md #12: `RequestIDMiddleware` broke every real request
-because it never marked itself coroutine-visible to the sync-style middleware wrapping it,
-and neither `manage.py check` nor a unit-level middleware test dispatches a real request
-through the actual `MIDDLEWARE` chain, so the bug shipped a full phase undetected.
+"""Regression guard: `RequestIDMiddleware` once broke every real request because it never
+marked itself coroutine-visible to the sync-style middleware wrapping it, and neither
+`manage.py check` nor a unit-level middleware test dispatches a real request through the
+actual `MIDDLEWARE` chain, so the bug shipped a full phase undetected.
 
 `django.test.AsyncClient` builds the same `settings.MIDDLEWARE` chain in async mode
 (`load_middleware(is_async=True)`) that `config.asgi.application` — what `uvicorn` actually

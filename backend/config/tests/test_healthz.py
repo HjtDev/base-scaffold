@@ -50,7 +50,7 @@ def test_check_cache_false_when_the_backend_raises() -> None:
 def test_check_database_detail_is_generic_with_debug_off() -> None:
     # /healthz/ is unauthenticated — a raw exception string routinely names the internal
     # host/port a service failed to reach, which must never reach an anonymous caller in
-    # production. See docs/CORRECTIONS.md.
+    # production.
     with (
         override_settings(DEBUG=False),
         patch("config.views.connections") as mock_connections,

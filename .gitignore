@@ -7,8 +7,7 @@
 # setuptools artifact patterns are anchored to /backend/ where they'd otherwise be
 # unanchored and match unrelated directories under frontend/ — e.g. bare `lib/` silently
 # excluded frontend/lib/ (api-client.ts, query-client.ts) from git entirely. `build/` and
-# `dist/` are left unanchored: both ecosystems legitimately produce them. See
-# docs/CORRECTIONS.md.
+# `dist/` are left unanchored: both ecosystems legitimately produce them.
 __pycache__/
 *.py[cod]
 *$py.class
@@ -61,6 +60,11 @@ staticfiles/
 media/
 logs/
 
+# ---------------------------------------------------------------- backups
+# `make backup` (dev) and deploy-prod.sh's --backup-db (prod, server-side only) both write
+# here — never synced, never committed. See deploy-prod.sh's rsync excludes for the prod side.
+backups/
+
 # ---------------------------------------------------------------- Node / Next.js
 node_modules/
 .next/
@@ -79,7 +83,7 @@ next-env.d.ts
 
 # deploy/deploy.prod.env holds SERVER_HOST/SSH_KEY_PATH (§9) and does NOT match either
 # pattern above — "deploy.prod.env" has no ".env" prefix, so it needs its own rule. Its
-# .example counterpart is committed on purpose (docs/CORRECTIONS.md #42).
+# .example counterpart is committed on purpose.
 deploy/deploy.prod.env
 !deploy/deploy.prod.env.example
 

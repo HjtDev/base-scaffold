@@ -55,6 +55,9 @@ it, which is what makes `CLAUDE.md` able to say "read `docs/INTEGRATION-GUIDE.md
 This is the highest-leverage twenty minutes of the whole build. It's read on every turn, so
 it's what keeps the agent's behavior stable across eight sessions.
 
+The shape — abridged here; this repo's own root `CLAUDE.md` is the current, complete version
+and is what you should actually copy from, not this excerpt:
+
 ```markdown
 # CLAUDE.md — base-scaffold (the template itself)
 
@@ -71,10 +74,16 @@ consult them whenever a decision here constrains them.
 When this repo and the spec disagree, the spec wins — unless you believe the spec is wrong,
 in which case **stop and say so** rather than silently implementing something better.
 
+## Pinned versions & defaults
+A table of the concrete version/tooling decisions behind this build — see §1.3 below for how
+to fill it in. Cite the table instead of re-deriving a version from spec prose, and update it
+in lockstep with every file a version is baked into (`.python-version`, Docker base images,
+`pyproject.toml`, `package.json`, CI workflow).
+
 ## Non-negotiables for this repo
 - `uv` only. No `requirements.txt`, no `pip install`, anywhere, ever.
 - Postgres only. No SQLite, including in tests.
-- Django on ASGI. No `gunicorn`, no `wsgi:application` in any run command.
+- Django 6+ on ASGI. No `gunicorn`, no `wsgi:application` in any run command.
 - No authentication anywhere in this scaffold — auth is an installed app package.
 - Nothing project-specific. No client names, no business logic, no domain models.
   Placeholders where a project must fill something in.
@@ -90,6 +99,11 @@ in which case **stop and say so** rather than silently implementing something be
 - If something in the spec is ambiguous or looks wrong, ask. Do not guess and proceed.
 - Prefer boring, explicit, standard code. Cleverness here is a liability: this code gets
   read and modified by people (and agents) who have never seen it before.
+
+## Git protocol
+A commit-message format and review-before-commit protocol belongs here too — see this
+repo's own root `CLAUDE.md` for the exact wording to reuse; it's a fixed protocol, not
+something to re-derive per project.
 ```
 
 ### 1.3 Decide the handful of things the spec leaves open
@@ -99,8 +113,10 @@ Answer these before starting; each one is cheap now and annoying to change in ph
 | Decision | Reasonable default |
 |---|---|
 | Python version | 3.14 (must match `.python-version` and the Docker base image) |
-| Node version | 22 LTS |
+| Node version | 24 LTS |
 | Postgres version | 17 |
+| Redis version | 7 |
+| uv version | 0.11 — must track the toolchain that writes `backend/uv.lock`; see CLAUDE.md's pinned-versions table for why the pin isn't cosmetic |
 | Package manager (frontend) | `npm` — switch to `pnpm` only if you've decided deliberately |
 | Placeholder project name | `myproject` (what `rename-project.sh` replaces) |
 | GitHub org | your real org, since it appears in install commands |
@@ -185,12 +201,16 @@ prod env; note them, don't suppress them).
 anywhere; `celery.py` autodiscovering tasks so installed apps' `tasks.py` is picked up;
 `/healthz/` actually touching both DB and Redis rather than returning a bare 200.
 
-### Phase 3 — `core/` and `tools/`
+### Phase 3 — `core/`, `tools/`, and the test stack
 
-**Goal:** the mediator layer and shared helpers, with their tests.
+**Goal:** the mediator layer and shared helpers, with their tests — plus the ephemeral
+Postgres/Redis stack the test suite needs to run against Postgres at all (§5.3), pulled
+forward from Phase 5 because nothing before this phase has tests to run yet, and no phase
+before Phase 5 otherwise has a compose file for it to live in.
 
 ```
-Phase 3: core/ and tools/. Read docs/BASE-DESIGN.md §6 and docs/INTEGRATION-GUIDE.md §4 + §6.
+Phase 3: core/, tools/, and the test stack. Read docs/BASE-DESIGN.md §5.3, §5.4, §6, and
+docs/INTEGRATION-GUIDE.md §4 + §6.
 
 Create:
 - core/{__init__,apps}.py with CoreConfig whose ready() imports core.signals
@@ -203,13 +223,21 @@ Create:
 - backend/conftest.py — api_client, user, admin_user, auth_client fixtures (§5.2)
 - core/tests/conftest.py — placeholder with a comment showing the cross-app factory pattern
 - tools/tests/ — real tests for crypto round-trip, cache helper, and the mixins' error shape
-- The two wiring smoke tests from §5.4: /api/schema/ returns 200 with expected tags, and
-  every throttle_scope in the codebase exists in DEFAULT_THROTTLE_RATES
+- config/tests/ — the two wiring smoke tests from §5.4: /api/schema/ returns 200 with
+  expected tags, and every throttle_scope in the codebase exists in DEFAULT_THROTTLE_RATES
+- docker-compose.test.yml per §5.3 — ephemeral Postgres + Redis on non-default ports, both
+  with healthchecks, so `up -d --wait` actually blocks on both before pytest connects
+- The Makefile's `test` target per §5.3 — brings the test stack up, exports the
+  non-default-port credentials, runs `uv run pytest -n auto -m "not slow"`, tears the stack
+  down. This is the only Makefile target this phase adds; the rest wait for Phase 5's
+  compose file and Phase 8's polish.
 
-Add core to INSTALLED_APPS. Then run the test suite and paste the output.
+Add core to INSTALLED_APPS. Then run `make test` (not a bare `uv run pytest` — the suite
+must run against real Postgres, never SQLite) and paste the output.
 ```
 
-**Verify:** `uv run pytest` passes with real (non-trivial) tests for `tools/`.
+**Verify:** `make test` passes with real (non-trivial) tests for `tools/`, against the
+ephemeral Postgres/Redis stack, not SQLite.
 
 **Review for:** commented examples being *correct* — they're the pattern every future project
 copies, so a subtly wrong one propagates. Check `on_commit` is there, `**kwargs` is there,
@@ -225,8 +253,11 @@ Phase 4: the Next.js frontend. Read docs/BASE-DESIGN.md §2 and §3, and
 docs/APP-DESIGN.md §12 for what installed SDKs will expect from lib/.
 
 Create a Next.js App Router app in frontend/ with TypeScript strict mode:
-- package.json (npm, Node 22), tsconfig.json with strict + noUncheckedIndexedAccess,
+- package.json (npm, Node 24), tsconfig.json with strict + noUncheckedIndexedAccess,
   next.config.ts with output: "standalone", eslint.config.mjs, vitest.config.ts
+- .prettierrc, .prettierignore, and `format`/`format:check` scripts in package.json — §7's
+  CI and §10.2's `make fmt`/`make lint` both require them from the first commit, not added
+  later
 - lib/query-client.ts — the single shared QueryClient with sensible defaults
   (staleTime, retry policy) and a comment noting installed app SDKs depend on this
   being mounted, per APP-DESIGN.md §12's peer-dependency contract
@@ -237,11 +268,15 @@ Create a Next.js App Router app in frontend/ with TypeScript strict mode:
   so a fresh clone visibly proves the two halves are talking
 - app/api/health/route.ts — the frontend healthcheck target from §8.2
 - .env.example with NEXT_PUBLIC_API_URL
+- tests/ — at least one real test per lib/ module (query-client, api-client). A vitest
+  suite with zero test files exits non-zero, and §7's CI runs `npm run test -- --run`
+  starting this phase, not later — an empty suite here fails CI on the very next phase.
 
-Then run `npm ci`, `npx tsc --noEmit`, `npm run lint`, `npm run build` and paste the output.
+Then run `npm ci`, `npx tsc --noEmit`, `npm run lint`, `npm run format:check`,
+`npm run test -- --run`, `npm run build` and paste the output.
 ```
 
-**Verify:** all four commands pass.
+**Verify:** all six commands pass.
 
 **Review for:** `output: "standalone"` present (phase 5's Dockerfile depends on it); no
 hardcoded `localhost:8000` outside `.env.example`; `strict: true`.
@@ -269,9 +304,9 @@ Create:
 - docker-compose.prod.yml — Dockerfile.prod, no bind mounts, ports bound to 127.0.0.1,
   resource limits, json-file log rotation, no-new-privileges
 
-docker-compose.test.yml is NOT this phase's work — it was pulled forward to Phase 3
-(CORRECTIONS.md #8) because §5.3's test target needed it before Phase 5 existed. Verify it's
-already correct rather than recreating it.
+docker-compose.test.yml is NOT this phase's work — it was pulled forward to Phase 3 because
+§5.3's test target needed it before Phase 5 existed. Verify it's already correct rather than
+recreating it.
 
 Then: `docker compose up --build`, wait for every service to report healthy, and paste
 `docker compose ps` showing the health column. Then `docker compose -f docker-compose.prod.yml
@@ -287,7 +322,7 @@ runtime `ImportError`s that only appear in the final stage); the `.venv` shadowi
 prod not mounting source; prod actually running as the non-root user (`docker compose -f
 docker-compose.prod.yml run --rm backend whoami`); healthchecks on all six services, not just
 backend. Also check, empirically rather than by reading the spec — §8 shipped with several
-defects that only a real build/run surfaces (see CORRECTIONS.md #16–25): the `frontend`
+defects that only a real build/run surfaces: the `frontend`
 healthcheck resolving `localhost` on Alpine/musl, the `celery-beat` healthcheck's pidfile,
 the `uv` image pin against `backend/uv.lock`'s actual revision, and whether `--no-dev` really
 excludes every non-production dependency group.
@@ -346,10 +381,10 @@ health gate, not before; `.env` files in the rsync excludes.
 Phase 8: developer ergonomics.
 
 - Makefile per docs/BASE-DESIGN.md §10.2, with a self-documenting help target — but the
-  compose-stack targets (up/down/logs/shell/migrate/migrations/superuser) already exist as of
-  Phase 5, which is when docker-compose.yml first exists for them to wrap (CORRECTIONS.md
-  #27, same reasoning as pulling docker-compose.test.yml forward to Phase 3). This phase adds
-  what's left: lint/fmt/typecheck/check/deploy.
+  compose-stack targets (up/down/stop/ps/logs/shell/migrate/migrations/superuser/backup)
+  already exist as of Phase 5, which is when docker-compose.yml first exists for them to
+  wrap (same reasoning as pulling docker-compose.test.yml forward to Phase 3). This phase
+  adds what's left: lint/fmt/typecheck/django-checks/test/build/check/deploy.
 - scripts/rename-project.sh per §11.1 — replaces the placeholder project name across every
   tracked file that actually contains it (derive the list by grepping, don't hardcode it —
   §11.1's original file list was wrong in both directions); must be idempotent and must print
@@ -358,8 +393,14 @@ Phase 8: developer ergonomics.
   project's, and rename-project.sh must never write over it. CLAUDE.md.template (root, both
   variants) is what rename-project.sh renders the host-project CLAUDE.md from, at clone time,
   with placeholders it can fill in and {{...}} left for the ones it can't (§10.1)
-- README.md — the §10 bootstrap walkthrough, verbatim and tested. Nothing else; this
-  README is read once per project, on day one.
+- README.md — enough for a developer or an agent arriving at a cloned project to work
+  productively without reading the design docs first: the §10 bootstrap walkthrough
+  (verbatim and tested), the ownership model, the full Makefile target table, how to
+  install an app package, where code goes, the `.env` inventory, what `make check` covers,
+  deployment in brief, and a troubleshooting section for the gotchas this build actually
+  hit (rebuild-vs-restart, the `.venv` bind-mount shadowing, `uv.lock`/`--locked` failures,
+  the `tooling` profile). Scannable — headings and tables, not prose walls; this README is
+  read once per project on day one and then grepped.
 
 Then run every make target that doesn't need a server and paste the output.
 ```

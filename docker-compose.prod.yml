@@ -81,8 +81,7 @@ services:
       # request.is_secure() true exactly the way nginx's real header would — no new
       # unauthenticated-over-plaintext exemption on the app side, and nothing to remember
       # to lock down in nginx. `curl -f` doesn't fail on 3xx, so without this the
-      # healthcheck would report healthy without ever running the DB/cache checks. See
-      # docs/CORRECTIONS.md.
+      # healthcheck would report healthy without ever running the DB/cache checks.
       test: ["CMD", "curl", "-fsS", "-H", "X-Forwarded-Proto: https",
              "http://127.0.0.1:8000/healthz/"]
       interval: 30s
@@ -118,7 +117,7 @@ services:
       # where celery could start racing an unmigrated DB. §9 mitigates this by running
       # `migrate` immediately after backend reports healthy and before real traffic is
       # routed; `restart: unless-stopped` makes any task that hits it self-healing rather
-      # than fatal. See docs/CORRECTIONS.md.
+      # than fatal.
       backend: { condition: service_healthy }
     deploy:
       resources:
@@ -133,9 +132,8 @@ services:
     build: { context: ./backend, dockerfile: Dockerfile.prod }
     restart: unless-stopped
     env_file: [./backend/.env.prod]
-    # --pidfile is NOT in BASE-DESIGN.md §8.2's literal command — see docker-compose.yml's
-    # comment and docs/CORRECTIONS.md; celery beat writes no pidfile at all by default, so
-    # the healthcheck below could never pass without it.
+    # --pidfile is required, not decoration — celery beat writes no pidfile at all by
+    # default, so the healthcheck below could never pass without it.
     command: ["celery", "-A", "config", "beat", "-l", "info",
               "--scheduler", "django_celery_beat.schedulers:DatabaseScheduler",
               "--pidfile=/tmp/celerybeat.pid"]

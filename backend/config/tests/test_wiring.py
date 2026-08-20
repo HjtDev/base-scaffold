@@ -1,7 +1,8 @@
 """The three wiring smoke tests BASE-DESIGN.md §5.4 / INTEGRATION-GUIDE.md §4 ask the host
-to carry, plus the jazzmin-ordering regression test CORRECTIONS.md #4 assigns to Phase 3.
-These pass vacuously in a fresh scaffold with no apps installed — they're tripwires for the
-first app install, not assertions about today's (empty) state.
+to carry, plus a jazzmin-ordering regression test (§4.3 — jazzmin must precede
+django.contrib.admin in INSTALLED_APPS). These pass vacuously in a fresh scaffold with no
+apps installed — they're tripwires for the first app install, not assertions about today's
+(empty) state.
 """
 
 import re
@@ -90,8 +91,8 @@ def test_every_schema_operation_carries_a_tag() -> None:
 
 
 def test_jazzmin_precedes_django_admin_in_installed_apps() -> None:
-    # CORRECTIONS.md #4 — jazzmin overrides the admin's templates via Django's
-    # app-directories loader, which resolves to the FIRST match in INSTALLED_APPS.
-    # Reversed, the admin still renders, just silently unthemed.
+    # jazzmin overrides the admin's templates via Django's app-directories loader, which
+    # resolves to the FIRST match in INSTALLED_APPS. Reversed, the admin still renders,
+    # just silently unthemed.
     apps = settings.INSTALLED_APPS
     assert apps.index("jazzmin") < apps.index("django.contrib.admin")

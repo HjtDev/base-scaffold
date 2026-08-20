@@ -3,7 +3,7 @@
 This is where installed apps' `factories.py` (APP-DESIGN.md §7.3) earns its place:
 importing another app's factories from `core/tests/` is sanctioned and expected;
 importing them from `core/services/` or any other production code is a bug, enforced
-by the `no-factories-in-core` pre-commit hook (docs/CORRECTIONS.md #2).
+by the `no-factories-in-core` pre-commit hook.
 
 Empty in a fresh scaffold — no apps are installed yet. The commented example below
 shows the pattern: seed whatever objects a cross-app test needs (a cart with items and

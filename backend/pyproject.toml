@@ -16,7 +16,7 @@ dependencies = [
     "python-decouple>=3.8,<4.0",
     "whitenoise>=6.8,<7.0",
     "uvicorn[standard]>=0.34,<1.0",
-    "cryptography>=44,<46",
+    "cryptography>=50,<51",
     "structlog>=25,<26",
     "sentry-sdk[django,celery]>=2.20,<3.0",
     # ---- installed app packages get appended here by `uv add`, one line each
@@ -45,7 +45,7 @@ test = [
 # Both groups are the right local default. Docker's prod builder must NOT rely on
 # `uv sync --no-dev` to exclude "test" — that flag is only an alias for `--no-group dev`
 # and leaves "test" (pytest, factory-boy, freezegun) installed. Use `--no-default-groups`
-# there instead. See backend/Dockerfile.prod and docs/CORRECTIONS.md.
+# there instead. See backend/Dockerfile.prod.
 default-groups = ["dev", "test"]
 
 # Uncomment ONE of these blocks while developing an app package against this project.

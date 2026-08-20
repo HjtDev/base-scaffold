@@ -12,10 +12,10 @@ on:
   pull_request:
 
 env:
-  # PYTHON_VERSION is deliberately not declared here: backend/.python-version is the single
+  # PYTHON_VERSION is deliberately not declared here: the root .python-version is the single
   # source of truth and astral-sh/setup-uv already reads it — a second declaration is a
-  # second place the version could drift. See docs/CORRECTIONS.md.
-  NODE_VERSION: "22"
+  # second place the version could drift.
+  NODE_VERSION: "24"
   # Tracks the toolchain that writes backend/uv.lock (uv 0.11.19, lockfile revision 3) — see
   # CLAUDE.md's pinned-versions table and backend/Dockerfile.prod. `uv sync --locked` refuses
   # a lockfile revision newer than it supports, so this pin is not cosmetic.
@@ -29,7 +29,7 @@ jobs:
       # config/settings.py — every decouple.config(...) call with no default (SECRET_KEY,
       # ALLOWED_HOSTS, FERNET_KEY, POSTGRES_*, REDIS_URL) raises at import time if unset, and
       # this job never connects to a real DB/cache, so these are placeholder literals, not
-      # real credentials — see docs/CORRECTIONS.md.
+      # real credentials.
       SECRET_KEY: mypy-django-plugin-needs-a-value-not-a-real-secret
       ALLOWED_HOSTS: localhost
       FERNET_KEY: mypy-only-placeholder-not-a-real-fernet-key
@@ -82,8 +82,9 @@ jobs:
       REDIS_URL: redis://localhost:6379/0
       ALLOWED_HOSTS: localhost
       DEBUG: "False"
-      # Without this, `check --deploy --fail-level WARNING` fails on security.W004 — see
-      # CORRECTIONS.md #3 for why the app itself never defaults this value to non-zero.
+      # Without this, `check --deploy --fail-level WARNING` fails on security.W004. The app
+      # itself never defaults this to non-zero (BASE-DESIGN.md §4.3) — a year of HSTS is
+      # effectively irreversible, so it's set explicitly here rather than inherited.
       SECURE_HSTS_SECONDS: "31536000"
       # locmem, not console/smtp: config/checks.py's config.E004 rejects an empty or
       # still-default (`mailpit`) EMAIL_HOST once DEBUG is off, and locmem is the correct
@@ -143,7 +144,7 @@ jobs:
         working-directory: frontend
         # Backend enforces formatting with `ruff format --check` above; without this step
         # prettier was only enforced by pre-commit, which is opt-in per clone and therefore
-        # not a gate at all. See docs/CORRECTIONS.md.
+        # not a gate at all.
       - run: npm run test -- --run
         working-directory: frontend
       - run: npm run build

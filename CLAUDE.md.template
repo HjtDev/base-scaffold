@@ -147,11 +147,9 @@ how this architecture's reuse benefit quietly erodes.
 ```
 semantic(<scope>): <short_commit_message>
 
-Dashed description of changes
-
-Add <what was added>
-Remove <what was removed>
-Update <what was changed>
+- Add <what was added>
+- Remove <what was removed>
+- Update <what was changed>
 ```
 
 Rules for it:
@@ -162,9 +160,10 @@ Rules for it:
   covers the change; if a change genuinely spans everything, it's probably two commits.
 - `<short_commit_message>` is imperative mood, lowercase, no trailing period, under 60 chars
   — "add uv project config", not "Added uv project config."
-- Keep the literal line `Dashed description of changes` as the body's first line, then a
-  blank line, then the bullets.
-- One bullet per meaningful change, each starting with an imperative verb (`Add`, `Remove`,
+- A blank line after the title, then the bullets directly — no literal header line above
+  them.
+- Every bullet is a literal `- `-prefixed line, one per line — not a bare line, not a `*`.
+  One bullet per meaningful change, each starting with an imperative verb (`Add`, `Remove`,
   `Update`, `Move`, `Rename`, `Fix`, `Pin`, `Enable`, `Disable`). Capitalised, no trailing
   period. Group trivia rather than listing every file — bullets describe changes, not a
   file inventory.
@@ -177,13 +176,11 @@ Example:
 ```
 chore(backend): add uv project config and tooling baseline
 
-Dashed description of changes
-
-Add backend/pyproject.toml with dependencies, dev/test dependency groups and uv default-groups
-Add ruff, mypy, pytest and coverage configuration
-Add commented banned-api table enforcing the core/-only app import rule
-Add MANIFEST.in, .python-version and .dockerignore
-Update .gitignore to cover .venv, .ruff_cache and .mypy_cache
+- Add backend/pyproject.toml with dependencies, dev/test dependency groups and uv default-groups
+- Add ruff, mypy, pytest and coverage configuration
+- Add commented banned-api table enforcing the core/-only app import rule
+- Add MANIFEST.in, .python-version and .dockerignore
+- Update .gitignore to cover .venv, .ruff_cache and .mypy_cache
 ```
 
 ---
@@ -278,11 +275,9 @@ Anything above needs a **Host action:** line in `CHANGELOG.md` saying what a hos
 ```
 semantic(<scope>): <short_commit_message>
 
-Dashed description of changes
-
-Add <what was added>
-Remove <what was removed>
-Update <what was changed>
+- Add <what was added>
+- Remove <what was removed>
+- Update <what was changed>
 ```
 
 Rules for it:
@@ -293,9 +288,10 @@ Rules for it:
   covers the change; if a change genuinely spans everything, it's probably two commits.
 - `<short_commit_message>` is imperative mood, lowercase, no trailing period, under 60 chars
   — "add uv project config", not "Added uv project config."
-- Keep the literal line `Dashed description of changes` as the body's first line, then a
-  blank line, then the bullets.
-- One bullet per meaningful change, each starting with an imperative verb (`Add`, `Remove`,
+- A blank line after the title, then the bullets directly — no literal header line above
+  them.
+- Every bullet is a literal `- `-prefixed line, one per line — not a bare line, not a `*`.
+  One bullet per meaningful change, each starting with an imperative verb (`Add`, `Remove`,
   `Update`, `Move`, `Rename`, `Fix`, `Pin`, `Enable`, `Disable`). Capitalised, no trailing
   period. Group trivia rather than listing every file — bullets describe changes, not a
   file inventory.
@@ -314,11 +310,9 @@ Example:
 ```
 chore(backend): add uv project config and tooling baseline
 
-Dashed description of changes
-
-Add backend/pyproject.toml with dependencies, dev/test dependency groups and uv default-groups
-Add ruff, mypy, pytest and coverage configuration
-Add commented banned-api table enforcing the core/-only app import rule
-Add MANIFEST.in, .python-version and .dockerignore
-Update .gitignore to cover .venv, .ruff_cache and .mypy_cache
+- Add backend/pyproject.toml with dependencies, dev/test dependency groups and uv default-groups
+- Add ruff, mypy, pytest and coverage configuration
+- Add commented banned-api table enforcing the core/-only app import rule
+- Add MANIFEST.in, .python-version and .dockerignore
+- Update .gitignore to cover .venv, .ruff_cache and .mypy_cache
 ```
