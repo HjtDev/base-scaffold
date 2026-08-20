@@ -39,11 +39,15 @@ Prefer `make`; it's the single place these are defined.
 
 | Command | What it does |
 |---|---|
+| `make install` | `uv sync --locked` + `npm ci` + install pre-commit hooks |
 | `make up` | Start the dev stack (`docker compose up --build`) |
 | `make down` / `make logs` | Stop / tail |
-| `make test` | Host test suite against an ephemeral Postgres |
-| `make lint` / `make fmt` / `make typecheck` | ruff + eslint / format / mypy + tsc |
-| **`make check`** | **lint + typecheck + test — the definition of done** |
+| `make test` | Full suite (pytest + vitest) against an ephemeral Postgres + Redis — CI parity |
+| `make test-fast` | Backend only, `-m "not slow"` — the inner-loop version of `test` |
+| `make lint` / `make fmt` / `make typecheck` | ruff+eslint format-check / fix / mypy+tsc |
+| `make django-checks` | `makemigrations --check` + `check --deploy` under a prod-shaped env |
+| `make build` | Production frontend build (`npm run build`) |
+| **`make check`** | **lint + typecheck + django-checks + test + build — parity with CI, the definition of done** |
 | `make migrate` / `make migrations` | Apply / create migrations |
 | `make shell` | `shell_plus` in the backend container |
 | `make deploy` | `./deploy/deploy-prod.sh` |

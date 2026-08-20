@@ -350,11 +350,14 @@ Phase 8: developer ergonomics.
   Phase 5, which is when docker-compose.yml first exists for them to wrap (CORRECTIONS.md
   #27, same reasoning as pulling docker-compose.test.yml forward to Phase 3). This phase adds
   what's left: lint/fmt/typecheck/check/deploy.
-- scripts/rename-project.sh per §11.1 — replaces the placeholder project name across
-  .env.example, docker-compose*.yml, CLAUDE.md, pyproject.toml, package.json; must be
-  idempotent and must print what it changed
-- CLAUDE.md — generated from CLAUDE.md.template with placeholders left as {{...}} for
-  rename-project.sh to fill
+- scripts/rename-project.sh per §11.1 — replaces the placeholder project name across every
+  tracked file that actually contains it (derive the list by grepping, don't hardcode it —
+  §11.1's original file list was wrong in both directions); must be idempotent and must print
+  what it changed
+- This repo's own root CLAUDE.md is the scaffold's authoring instructions, not a host
+  project's, and rename-project.sh must never write over it. CLAUDE.md.template (root, both
+  variants) is what rename-project.sh renders the host-project CLAUDE.md from, at clone time,
+  with placeholders it can fill in and {{...}} left for the ones it can't (§10.1)
 - README.md — the §10 bootstrap walkthrough, verbatim and tested. Nothing else; this
   README is read once per project, on day one.
 

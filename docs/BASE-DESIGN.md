@@ -45,7 +45,11 @@ my-client-project/
 ├── .env.example                     # [tracked] template for the above
 ├── .pre-commit-config.yaml          # ruff, mypy, prettier, eslint — see §5.1
 ├── .python-version                  # e.g. "3.14" — matches the Docker base image
-├── CLAUDE.md                        # agent instructions — generated at clone time, see §10
+├── README.md                        # the §10 walkthrough, read once per project on day one
+├── CLAUDE.md                        # agent instructions — rendered at clone time, see §10.1
+├── CLAUDE.md.template               # source rename-project.sh renders CLAUDE.md from, §10.1
+├── scripts/
+│   └── rename-project.sh            # names the project — see §11.1, run once at clone time
 ├── docs/
 │   ├── APP-DESIGN.md                # copied in at clone time so agents can read them locally
 │   ├── BASE-DESIGN.md
@@ -1139,12 +1143,15 @@ rm -rf .git && git init
 cp .env.example .env
 cp backend/.env.example backend/.env
 cp frontend/.env.example frontend/.env.local
-python3 -c "import secrets; print(secrets.token_urlsafe(64))"                    # SECRET_KEY
-python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"  # FERNET_KEY
+python3 -c "import secrets; print(secrets.token_urlsafe(64))"                              # SECRET_KEY
+python3 -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"   # FERNET_KEY
+# stdlib only — cryptography isn't installed until step 5, and its own Fernet.generate_key()
+# output is byte-for-byte the same shape as this (32 random bytes, urlsafe-base64), so either
+# is a valid key; this form just works before `uv sync` has run.
 # paste both into backend/.env, then fill in DB creds and PROJECT_NAME
 
 # 5. Python + Node dependencies
-cd backend && uv sync && cd ..
+cd backend && uv sync --locked && cd ..    # --locked proves pyproject.toml and uv.lock agree
 cd frontend && npm ci && cd ..
 
 # 6. Hooks
@@ -1165,21 +1172,74 @@ open http://localhost:3000
 git add . && git commit -m "chore: initial commit from base-scaffold vX.Y.Z"
 ```
 
+Steps 5–6 are `make install`; step 7 is `make up`; `make check` is the definition of done from
+here on (§10.2) — the explicit steps above are what those targets actually run, spelled out
+once for a first read.
+
 At this point the project is fully independent. Installing a reusable app package (both halves) follows the protocol in `INTEGRATION-GUIDE.md` §2, and there's no further contact with the base-scaffold repo unless you're deliberately backporting an improvement by hand.
 
 ### 10.1 `CLAUDE.md` is generated, not copied blank
 
-Step 3's `rename-project.sh` fills the project name into `CLAUDE.md` from the template (see `CLAUDE.md.template`). Keeping it generated rather than hand-written matters because a `CLAUDE.md` with the wrong project name and a stale installed-apps list is worse than none — an agent will trust it.
+`base-scaffold`'s own root `CLAUDE.md` is this repo's authoring instructions — the working agreement and pinned-versions table used to *build* the scaffold. It is never copied into a cloned project and `rename-project.sh` never writes over it. Step 3's `rename-project.sh` instead renders the **host-project variant** out of `CLAUDE.md.template` (the file's other variant, at the bottom, is for an app-package repo — see `APP-DESIGN.md`), fills in `{{PROJECT_NAME}}` and the other placeholders it can know, and writes the result to the clone's `CLAUDE.md`. Keeping it generated rather than hand-written matters because a `CLAUDE.md` with the wrong project name and a stale installed-apps list is worse than none — an agent will trust it. The script guards this write: it only replaces a `CLAUDE.md` that still carries the scaffold's own marker heading, so a second run in an already-renamed project can't clobber edits a human has since made.
 
 ### 10.2 `Makefile`
 
+`check` is defined as **parity with `.github/workflows/ci.yml`**: every job/step in CI maps to
+a make target, or is named as a deliberate exclusion in the header comment. Any new CI step
+must be mirrored here or explicitly documented as excluded — this rule is stated in the
+Makefile itself, not just here, so it doesn't rot the next time CI gains a step.
+
 ```make
+# A thin, memorable interface over the real commands — BASE-DESIGN.md §10.2. Built up phase
+# by phase as its prerequisites landed (Phase 3: test: Phase 5: compose-stack targets; Phase 8:
+# everything below). See docs/CORRECTIONS.md for that history.
+#
+# `check` is defined as PARITY WITH .github/workflows/ci.yml: every job/step in CI maps to a
+# target below, or is named as a deliberate exclusion. Any new CI step must be mirrored here or
+# documented as excluded — that's the rule, not just this phase's intent (docs/BASE-DESIGN.md
+# §10.2).
+#
+#   ci.yml job         step                                   make target
+#   -----------         ----                                   -----------
+#   backend-quality      uv sync --locked                       install
+#                        ruff check .                            lint
+#                        ruff format --check .                   lint
+#                        mypy .                                   typecheck
+#   backend-tests        uv sync --locked                       install
+#                        makemigrations --check --dry-run        django-checks
+#                        check --deploy --fail-level WARNING     django-checks
+#                        pytest -n auto                           test
+#   frontend             npm ci                                  install
+#                        tsc --noEmit                             typecheck
+#                        npm run lint                             lint
+#                        npm run format:check                     lint
+#                        npm run test -- --run                    test
+#                        npm run build                             build
+#   docker-build         prod image build + boot smoke test       EXCLUDED — a minutes-long
+#                                                                  BuildKit run; `make up` and
+#                                                                  `make deploy` already
+#                                                                  exercise the same Dockerfiles
+#   security-audit       pip-audit / npm audit                    EXCLUDED — a network CVE
+#                                                                  lookup, advisory only in CI
+#                                                                  (continue-on-error: true,
+#                                                                  never a required check —
+#                                                                  CORRECTIONS.md #39)
+#
+# `uv sync --locked` / `npm ci` are deliberately NOT part of `check` — re-installing on every
+# check is slow and, for npm, destructive to node_modules. `make install` is the lock-drift
+# gate: run it after touching pyproject.toml/uv.lock or package.json/package-lock.json.
 .DEFAULT_GOAL := help
-.PHONY: help up down logs shell test lint fmt typecheck migrate migrations superuser \
-        install check deploy
+.PHONY: help install up down logs shell migrate migrations superuser \
+        lint fmt typecheck django-checks test test-fast build check deploy
 
 help:  ## Show this help
 	@grep -E '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | awk -F':.*?## ' '{printf "  %-14s %s\n", $$1, $$2}'
+
+install:       ## uv sync --locked + npm ci + install pre-commit hooks
+	cd backend && uv sync --locked
+	cd frontend && npm ci
+	uv run --directory backend pre-commit install
+	test -f backend/.env || echo "NOTE: backend/.env doesn't exist yet — see README.md step 4."
 
 up:            ## Start the dev stack
 	docker compose up --build
@@ -1195,28 +1255,47 @@ migrations:    ## Create migrations
 	docker compose exec backend python manage.py makemigrations
 superuser:     ## Create a superuser
 	docker compose exec backend python manage.py createsuperuser
-test:          ## Run the host test suite against an ephemeral Postgres + Redis
-	docker compose -f docker-compose.test.yml up -d --wait
-	cd backend && POSTGRES_HOST=localhost POSTGRES_PORT=55432 \
-	  POSTGRES_DB=test_db POSTGRES_USER=postgres POSTGRES_PASSWORD=postgres \
-	  REDIS_URL=redis://localhost:56379/0 \
-	  uv run pytest -n auto -m "not slow"
-	docker compose -f docker-compose.test.yml down
-lint:          ## Ruff + ESLint
-	cd backend && uv run ruff check .
-	cd frontend && npm run lint
-fmt:           ## Format everything
+
+lint:          ## Ruff + ESLint + format checks (ruff format --check, prettier --check) — the CI gate
+	cd backend && uv run ruff check . && uv run ruff format --check .
+	cd frontend && npm run lint && npm run format:check
+fmt:           ## Fix everything lint checks for — the companion fixer, not run by `check`
 	cd backend && uv run ruff check --fix . && uv run ruff format .
 	cd frontend && npm run format
 typecheck:     ## mypy + tsc
 	cd backend && uv run mypy .
 	cd frontend && npx tsc --noEmit
-check: lint typecheck test  ## Everything CI runs, locally
-deploy:        ## Deploy to production
-	./deploy/deploy-prod.sh
+django-checks: ## makemigrations --check + check --deploy, under a prod-shaped env — no setup needed
+	cd backend && \
+	SECRET_KEY=$$(python3 -c "import secrets; print(secrets.token_urlsafe(64))") \
+	FERNET_KEY=$$(python3 -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())") \
+	DEBUG=False ALLOWED_HOSTS=localhost SECURE_HSTS_SECONDS=31536000 \
+	EMAIL_BACKEND=django.core.mail.backends.locmem.EmailBackend \
+	sh -c 'uv run python manage.py makemigrations --check --dry-run && uv run python manage.py check --deploy --fail-level WARNING'
+test:          ## Full suite (pytest + vitest) against an ephemeral Postgres + Redis — CI parity, what `check` runs
+	docker compose -f docker-compose.test.yml up -d --wait
+	trap 'docker compose -f docker-compose.test.yml down' EXIT; \
+	(cd backend && POSTGRES_HOST=localhost POSTGRES_PORT=55432 \
+	  POSTGRES_DB=test_db POSTGRES_USER=postgres POSTGRES_PASSWORD=postgres \
+	  REDIS_URL=redis://localhost:56379/0 \
+	  DEBUG=False SECURE_SSL_REDIRECT=False \
+	  uv run pytest -n auto) && \
+	(cd frontend && npm run test -- --run)
+test-fast:     ## Backend only, skips slow tests — the inner-loop version of `test`, NOT what `check` runs
+	docker compose -f docker-compose.test.yml up -d --wait
+	trap 'docker compose -f docker-compose.test.yml down' EXIT; \
+	(cd backend && POSTGRES_HOST=localhost POSTGRES_PORT=55432 \
+	  POSTGRES_DB=test_db POSTGRES_USER=postgres POSTGRES_PASSWORD=postgres \
+	  REDIS_URL=redis://localhost:56379/0 \
+	  uv run pytest -n auto -m "not slow")
+build:         ## Production frontend build — proves the Next.js build itself still succeeds
+	cd frontend && NEXT_PUBLIC_API_URL=http://localhost:8000 npm run build
+check: lint typecheck django-checks test build  ## Everything CI gates on, locally — the definition of done (see map above)
+deploy:        ## Deploy to production (pass flags via ARGS, e.g. make deploy ARGS=--follow)
+	./deploy/deploy-prod.sh $(ARGS)
 ```
 
-The `check` target is the one that matters: it gives `CLAUDE.md` a single command to name as the definition of done, and it gives a human one command to run before pushing.
+The `check` target is the one that matters: it gives `CLAUDE.md` a single command to name as the definition of done, and it gives a human one command to run before pushing. Unlike its earlier, incomplete form (`docs/CORRECTIONS.md` Open #14/#15), it now actually gates on everything CI does except the two jobs named above as excluded.
 
 ## 11. Ecosystem Tooling
 
@@ -1224,7 +1303,22 @@ Three small pieces of tooling that live *outside* any single project and make th
 
 ### 11.1 `scripts/rename-project.sh` (in the scaffold)
 
-Replaces the placeholder project name across `.env.example`, `docker-compose*.yml`, `CLAUDE.md`, `pyproject.toml`, and `package.json` in one pass. Hand-editing these is a five-minute job that gets done wrong roughly every other time, and the failure mode (two projects sharing a `PROJECT_NAME`, so their containers collide) is confusing to diagnose.
+Replaces the placeholder project name (`myproject`) across every file that actually contains it
+in one pass. The script derives that file list by grepping the tracked tree rather than
+hardcoding it — the original hardcoded list here named `docker-compose*.yml` (which contains no
+literal; those files interpolate `${PROJECT_NAME}` from `.env` at compose time) and omitted
+`backend/uv.lock`, `frontend/package-lock.json`, `backend/.env.example`, `.env.prod.example`,
+and `frontend/app/layout.tsx`'s `metadata.title` — a gap that broke `uv sync --locked`/`npm ci`
+in a renamed clone until `docs/CORRECTIONS.md` caught it. In practice this covers
+`.env.example`, `.env.prod.example`, `backend/.env.example`, `backend/pyproject.toml`,
+`backend/uv.lock`, `frontend/package.json`, `frontend/package-lock.json`, and
+`frontend/app/layout.tsx`, plus rendering the host `CLAUDE.md` from `CLAUDE.md.template`
+(§10.1). Lockfile edits are line-anchored to the root package's own `name` field, never a blind
+substring replace, so a dependency that happens to contain the placeholder can't be corrupted.
+Hand-editing this list is a five-minute job that gets done wrong roughly every other time, and
+the failure mode (two projects sharing a `PROJECT_NAME`, so their containers collide) is
+confusing to diagnose — deriving the list instead of hardcoding it is what keeps this section
+from drifting out of sync with the repo again.
 
 ### 11.2 `create-app-package` (a separate template repo)
 
