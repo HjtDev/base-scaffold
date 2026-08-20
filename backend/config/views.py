@@ -23,7 +23,7 @@ _HEALTHZ_CACHE_VALUE = "ok"
 # internal hostname/port a service failed to reach (confirmed: a real DB-down response here
 # was "failed to resolve host 'db': ..."). Same DEBUG-gated shape as
 # tools/mixins.py's standard_exception_handler: the real detail is always logged
-# server-side, and only surfaced in the response when DEBUG is on. See docs/CORRECTIONS.md.
+# server-side, and only surfaced in the response when DEBUG is on.
 _GENERIC_UNAVAILABLE_DETAIL = "unavailable"
 
 

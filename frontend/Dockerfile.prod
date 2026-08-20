@@ -2,12 +2,12 @@
 # Production frontend image — BASE-DESIGN.md §8.1. Standard Next.js multi-stage, using
 # `output: "standalone"` (frontend/next.config.ts) so the runner copies only the files
 # Next traced as actually needed, not the whole node_modules tree.
-FROM node:22-alpine AS deps
+FROM node:24-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci
 
-FROM node:22-alpine AS builder
+FROM node:24-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
@@ -18,7 +18,7 @@ ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
-FROM node:22-alpine AS runner
+FROM node:24-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1
 RUN addgroup -g 10001 nodejs && adduser -S -u 10001 -G nodejs nextjs

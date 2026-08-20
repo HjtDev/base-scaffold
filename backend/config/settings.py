@@ -32,7 +32,7 @@ SENTRY_DSN = config("SENTRY_DSN", default="")
 INSTALLED_APPS = [
     # jazzmin MUST precede django.contrib.admin — it overrides the admin templates via
     # Django's app-directories loader, which resolves to the first match in this list.
-    # Reversed, the admin still renders, just silently unthemed — see CORRECTIONS.md #4.
+    # Reversed, the admin still renders, just silently unthemed, with nothing to catch it.
     "jazzmin",
     "django.contrib.admin",
     "django.contrib.auth",
@@ -164,8 +164,8 @@ CORS_ALLOWED_ORIGINS = config("CORS_ALLOWED_ORIGINS", default="", cast=Csv())
 CORS_ALLOW_CREDENTIALS = config("CORS_ALLOW_CREDENTIALS", default=False, cast=bool)
 
 # ---------------------------------------------------------------------------- security
-# Env-driven, defaulting to "secure unless DEBUG says otherwise". See CORRECTIONS.md #3
-# for why SECURE_HSTS_SECONDS is the one exception that does NOT inherit that default.
+# Env-driven, defaulting to "secure unless DEBUG says otherwise" — SECURE_HSTS_SECONDS
+# below is the one exception that does NOT inherit that default; see its own comment.
 _SECURE_DEFAULT = not DEBUG
 SECURE_SSL_REDIRECT = config("SECURE_SSL_REDIRECT", default=_SECURE_DEFAULT, cast=bool)
 SESSION_COOKIE_SECURE = config("SESSION_COOKIE_SECURE", default=_SECURE_DEFAULT, cast=bool)
@@ -202,9 +202,9 @@ CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 
 # ---------------------------------------------------------------------------- email
 # EMAIL_BACKEND defaults to console in backend/.env.example (dev-correct) and must be set
-# to smtp explicitly in backend/.env.prod (production-correct) — see CORRECTIONS.md. The
-# code default here is smtp/mailpit because that's what's actually correct once a real
-# backend is configured; the console override lives in the env file, not here.
+# to smtp explicitly in backend/.env.prod (production-correct). The code default here is
+# smtp/mailpit because that's what's actually correct once a real backend is configured;
+# the console override lives in the env file, not here.
 EMAIL_BACKEND = config("EMAIL_BACKEND", default="django.core.mail.backends.smtp.EmailBackend")
 EMAIL_HOST = config("EMAIL_HOST", default="mailpit")
 EMAIL_PORT = config("EMAIL_PORT", default=1025, cast=int)

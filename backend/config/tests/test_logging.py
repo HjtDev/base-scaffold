@@ -1,7 +1,7 @@
 """`config.logging` — the request-ID contextvar/middleware/filter and the environment-split
-logging config (`docs/CORRECTIONS.md` #5). The contextvar-reset test is the important one:
-under ASGI concurrency, a set-without-reset leaks one request's ID into whatever runs next
-on the same task, and only a test — not a code read — catches that.
+logging config. The contextvar-reset test is the important one: under ASGI concurrency, a
+set-without-reset leaks one request's ID into whatever runs next on the same task, and only
+a test — not a code read — catches that.
 """
 
 import asyncio

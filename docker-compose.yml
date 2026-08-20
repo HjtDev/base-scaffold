@@ -89,9 +89,8 @@ services:
     restart: unless-stopped
     env_file: [./backend/.env]
     volumes: ["./backend:/app"]
-    # --pidfile is NOT in BASE-DESIGN.md §8.2's literal command, but celery beat's
-    # --pidfile default is "no pidfile at all" — without this flag the healthcheck below
-    # can never pass. See docs/CORRECTIONS.md.
+    # --pidfile is required, not decoration: celery beat's default is "no pidfile at
+    # all" — without this flag the healthcheck below can never pass.
     command: ["celery", "-A", "config", "beat", "-l", "info",
               "--scheduler", "django_celery_beat.schedulers:DatabaseScheduler",
               "--pidfile=/tmp/celerybeat.pid"]
@@ -148,10 +147,9 @@ services:
       redis: { condition: service_healthy }
 
   mailpit:
-    # BASE-DESIGN.md §8.2 originally named "mailhog"; MailHog has been unmaintained since
-    # 2020 and mailpit is its drop-in successor (same 1025/8025 ports). See
-    # docs/CORRECTIONS.md. Wired up via config/settings.py's EMAIL_* keys (EMAIL_HOST
-    # defaults to "mailpit", matching this service name) — flip
+    # mailpit, not mailhog — MailHog has been unmaintained since 2020 and mailpit is its
+    # drop-in successor (same 1025/8025 ports). Wired up via config/settings.py's EMAIL_*
+    # keys (EMAIL_HOST defaults to "mailpit", matching this service name) — flip
     # backend/.env's EMAIL_BACKEND to the smtp backend to use it.
     image: axllent/mailpit:v1.21
     container_name: ${PROJECT_NAME}_mailpit

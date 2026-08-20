@@ -260,6 +260,7 @@ rsync -az --delete \
   --exclude='.pytest_cache' \
   --exclude='staticfiles' \
   --exclude='logs' \
+  --exclude='backups' \
   --exclude='*.pyc' \
   ./ "${SERVER_USER}@${SERVER_HOST}:${SERVER_PATH}/"
 
@@ -282,9 +283,8 @@ for f in ".env.prod" "backend/.env.prod"; do
   fi
 done
 
-# Note: BASE-DESIGN.md §9 originally also listed a frontend/.env.prod. It doesn't exist —
-# NEXT_PUBLIC_API_URL is a frontend build ARG sourced from the root .env.prod, not a
-# runtime env file frontend ever reads. See docs/CORRECTIONS.md #40.
+# Note: there is deliberately no frontend/.env.prod — NEXT_PUBLIC_API_URL is a frontend
+# build ARG sourced from the root .env.prod, not a runtime env file frontend ever reads.
 
 if (( ${#MISSING_ENV_FILES[@]} > 0 )); then
   {

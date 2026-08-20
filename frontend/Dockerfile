@@ -3,7 +3,7 @@
 # §8.2's table ("Source: bind-mounted", "npm run dev") and the Phase 5 brief's one line.
 # Single-stage for the same reason backend/Dockerfile is: with the source bind-mounted, a
 # multi-stage builder buys nothing and costs rebuild time.
-FROM node:22-alpine
+FROM node:24-alpine
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 

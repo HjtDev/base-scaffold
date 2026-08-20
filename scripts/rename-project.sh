@@ -9,8 +9,8 @@
 # the same name is a no-op; re-running with a different name renames again.
 #
 # The file list is DERIVED by searching the working tree for the current placeholder, not
-# hardcoded — a hardcoded list is exactly how docs/BASE-DESIGN.md §11.1 drifted out of sync
-# with the repo (see docs/CORRECTIONS.md). Lockfiles (backend/uv.lock,
+# hardcoded — a hardcoded list is exactly how docs/BASE-DESIGN.md §11.1 once drifted out of
+# sync with the repo. Lockfiles (backend/uv.lock,
 # frontend/package-lock.json) get a narrow, line-anchored substitution of only the root
 # package's own `name` field — never a blind find-and-replace, which could corrupt a dependency
 # whose own name happens to contain the placeholder.

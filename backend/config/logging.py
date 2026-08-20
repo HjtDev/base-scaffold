@@ -7,8 +7,8 @@ to a person, colored text in prod is unparseable by any log aggregator, so a sin
 wrong in one environment no matter which is picked.
 
 The `ContextVar`, `RequestIDMiddleware`, and `RequestIDFilter` all live here, alongside the
-function they exist to serve, rather than in a separate `middleware.py` — see CORRECTIONS.md #5.
-No new dependency: `contextvars` and `logging.Filter` are both stdlib.
+function they exist to serve, rather than in a separate `middleware.py`. No new dependency:
+`contextvars` and `logging.Filter` are both stdlib.
 """
 
 import logging
