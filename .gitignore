@@ -76,6 +76,11 @@ next-env.d.ts
 .env.*
 !.env.example
 !.env.prod.example
+
+# deploy/deploy.prod.env holds SERVER_HOST/SSH_KEY_PATH (§9) and does NOT match either
+# pattern above — "deploy.prod.env" has no ".env" prefix, so it needs its own rule. Its
+# .example counterpart is committed on purpose (docs/CORRECTIONS.md #42).
+deploy/deploy.prod.env
 !deploy/deploy.prod.env.example
 
 # ---------------------------------------------------------------- editors / OS

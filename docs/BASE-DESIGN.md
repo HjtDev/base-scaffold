@@ -382,16 +382,19 @@ LOGGING = build_logging_config(debug=DEBUG)   # from config/logging.py, see §3
 
 ### 4.4 Env file inventory
 
-Four `.env` files, each with a tracked `.example`, and a clear rule about which is which:
+Five `.env` files, each with a tracked `.example`, and a clear rule about which is which:
 
 | File | Scope | Committed? |
 |---|---|---|
 | `.env` | Compose-level interpolation only — `PROJECT_NAME`, host ports | No (`.env.example` is) |
+| `.env.prod` | Same scope, production values (`PROJECT_NAME`, `NEXT_PUBLIC_API_URL`, host ports, `UVICORN_WORKERS`) — required by `docker-compose.prod.yml`'s `PROJECT_NAME:?` guard and passed via `--env-file` (§9) | No — **lives only on the server**, never synced |
 | `backend/.env` | Django dev settings, DB creds, Redis URL, app package keys | No (`.env.example` is) |
 | `backend/.env.prod` | Same keys, production values | No — **lives only on the server**, never synced |
 | `frontend/.env.local` | `NEXT_PUBLIC_API_URL` and friends | No |
 
-The "lives only on the server" rule for `.env.prod` is enforced by `deploy-prod.sh`'s rsync excludes (§9) and is worth keeping strict: the moment production secrets exist on a developer laptop, they exist in that laptop's backups.
+There is deliberately **no** `frontend/.env.prod` — `frontend/Dockerfile.prod` takes `NEXT_PUBLIC_API_URL` as a build **ARG** sourced from the root `.env.prod`, not a runtime env file, because `NEXT_PUBLIC_*` is inlined into the client bundle at build time (see `CORRECTIONS.md` #40 for where this originally diverged).
+
+The "lives only on the server" rule for `.env.prod` files is enforced by `deploy-prod.sh`'s rsync excludes (§9) and is worth keeping strict: the moment production secrets exist on a developer laptop, they exist in that laptop's backups.
 
 ## 5. Code Quality & Testing Setup
 
@@ -1102,19 +1105,18 @@ SSH_KEY_PATH=
 
 `deploy-prod.sh`, run from the repo root, does — in order:
 
-1. **Validate** `deploy.prod.env` exists with `SERVER_HOST`/`SERVER_USER` set; confirm it's being run from the repo root (checks for `docker-compose.prod.yml`); confirm the working tree is clean and, ideally, that CI is green on this commit — deploying a dirty tree is how "it works on my machine" reaches production literally.
-2. **Rsync** the working tree, excluding everything that shouldn't travel: `.git`, `.idea`/`.vscode`, `**/__pycache__`, `**/.venv`, `**/node_modules`, `**/.next`, `media/`, and any `.env`/`.env.prod` (those live only on the server).
-3. **On the server, over SSH:** confirm every required `.env.prod` file exists (root, `backend/`, `frontend/`) and fail loudly rather than deploying with a missing config; then `docker compose -f docker-compose.prod.yml --env-file .env.prod build --pull` and `up -d --remove-orphans`.
-4. **Wait for the backend healthcheck** to report healthy (poll `docker inspect`, bounded retries — fail and dump the last 100 log lines rather than hanging forever).
-5. **Only once healthy:** run `migrate` and `collectstatic --noinput` via `docker compose exec` — deliberately *not* in the container's boot command, so a migration runs once per deploy rather than once per replica or restart.
-6. **Verify** every expected container is actually `running` (not just that `up -d` returned success) and, now that everything has a healthcheck (§8.2), that each is `healthy` — dump logs for anything that isn't.
-7. **Reload nginx** if present, after `nginx -t` passes.
-8. **`--follow`** optionally tails `docker compose logs -f` after a successful deploy.
+1. **Validate** `deploy.prod.env` exists with `SERVER_HOST`/`SERVER_USER`/`SERVER_PATH` set; confirm it's being run from the repo root (checks for `docker-compose.prod.yml`); confirm the working tree is clean, **with no override** — deploying a dirty tree is how "it works on my machine" reaches production literally, and since this script rsyncs the working tree rather than a git ref, a clean tree is the only thing that makes "what commit is production running" answerable afterwards (see the `DEPLOYED_VERSION` file, step 2). Untracked files count as dirty too — an untracked file rsyncs exactly like a tracked one.
+   **CI gate**, replacing the original "ideally, that CI is green" (too vague to implement as written — see `CORRECTIONS.md` #46): with `gh` authenticated and an `origin` remote configured, look up the current commit's CI run by SHA and fail if it's missing, still running, or didn't conclude `success`/`skipped` — printing the run URL either way. If `gh` is absent, unauthenticated, or there's no `origin`, the check can't run and is skipped with a note (that's the machine's state, not the commit's). `--skip-ci-check` bypasses it entirely.
+2. **Rsync** the working tree, excluding everything that shouldn't travel: `.git`, `.idea`/`.vscode`, `__pycache__`, `.venv`, `node_modules`, `.next`, `media`, `.env`/`.env.prod`/`.env.local` (those live only on the server), `deploy/deploy.prod.env`, `.mypy_cache`, `.ruff_cache`, `.pytest_cache`, `staticfiles`, `logs`. Immediately after, write a `DEPLOYED_VERSION` file at `$SERVER_PATH` recording the commit SHA, `git describe`, timestamp, and deployer — the payoff for step 1's strict clean-tree check.
+3. **On the server, over SSH:** confirm every required `.env.prod` file exists — **root and `backend/` only** (not `frontend/`: `NEXT_PUBLIC_API_URL` is a frontend build **ARG** sourced from the root `.env.prod`, never a runtime env file frontend reads — see `CORRECTIONS.md` #40) — and fail loudly rather than deploying with a missing config; then `docker compose -f docker-compose.prod.yml --env-file .env.prod build --pull` and `up -d --remove-orphans`. `--env-file` is mandatory on every compose invocation from here on — without it, compose auto-loads a plain `.env` and `PROJECT_NAME:?` either aborts or silently collides with the dev stack's container names.
+4. **Wait for the backend healthcheck** to report healthy (poll `docker inspect --format '{{.State.Health.Status}}'`, bounded retries — fail and dump the last 100 log lines rather than hanging forever).
+5. **Back up the database** — unconditional, before migrating, `pg_dump` run inside the `backend` container (which is why `Dockerfile.prod` installs `postgresql-client` in its runtime stage) and gzipped to `$SERVER_PATH/backups/`. `--skip-backup-db` opts out. A destructive migration with no backup is the one failure mode in this list you cannot recover from.
+6. **Only once healthy and backed up:** run `migrate --noinput` and `collectstatic --noinput` via `docker compose exec` — deliberately *not* in the container's boot command, so a migration runs once per deploy rather than once per replica or restart.
+7. **Verify** every expected container — from `docker compose config --services` (which already accounts for compose profiles, so it never expects a profile-gated service) — is actually `running` (not just that `up -d` returned success) and, now that everything has a healthcheck (§8.2), that each is `healthy` or has no healthcheck at all — dump logs for anything that isn't.
+8. **Reload nginx**, after `nginx -t` passes. nginx is a **host-level** reverse proxy here, not a compose service — both `backend`'s and `frontend`'s published ports bind `127.0.0.1` (§8.2), so this step runs over SSH with `sudo` (`nginx -t`, then `systemctl reload nginx`) rather than through compose. `SKIP_NGINX_RELOAD=1` skips it (e.g. nginx isn't installed on this host).
+9. **`--follow`** optionally tails `docker compose logs -f` after a successful deploy.
 
-Two additions worth making to the original design:
-
-- **`--backup-db` (or unconditional).** Take a `pg_dump` on the server before step 5 runs a migration. A destructive migration with no backup is the one failure mode in this list you cannot recover from, and it costs one line.
-- **A note on migration ordering.** Steps 3–5 mean the new code is serving traffic *before* migrations run, which is fine for additive migrations and dangerous for destructive ones. For a single-container deploy the practical rule is: make migrations backward-compatible (add columns nullable, deploy, backfill, then drop in a later release) so there's never a window where running code and the schema disagree. Say this out loud in the script's header comment, because it's the kind of thing that's obvious in principle and forgotten under deadline.
+Migration ordering: steps 3–6 mean the new code is serving traffic *before* migrations run, which is fine for additive migrations and dangerous for destructive ones. For a single-container deploy the practical rule is: make migrations backward-compatible (add columns nullable, deploy, backfill, then drop in a later release) so there's never a window where running code and the schema disagree. This is said out loud in the script's header comment, because it's the kind of thing that's obvious in principle and forgotten under deadline.
 
 Failing loudly and early (missing env file, unhealthy container, failed nginx test, dirty tree) matters more here than anywhere else in this scaffold — a deploy script's whole job is to be the thing that stops a bad rollout, not the thing that quietly ships one.
 
