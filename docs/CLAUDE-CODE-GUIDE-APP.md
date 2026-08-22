@@ -19,6 +19,15 @@ training pulls against**: a normal Django app freely imports whatever's in the p
 this one cannot. Every session, the pull is toward `from payments_app.models import Payment`
 because that's what a million Django apps do.
 
+**`appkit` is app package #1 in this ecosystem, and it's the one named exception to that
+constraint** (`APP-DESIGN.md` §1.1) — every app declares it as a real, versioned dependency in
+`pyproject.toml`/`package.json` and imports the cache mixin, error-envelope handler, and
+`HttpClient`/provider from it rather than reimplementing them. If you're building `appkit`
+itself, most of this guide still applies, but there's nothing to declare a dependency *on* —
+it's the simplest possible instance of the shape below. If you're building any app *after* it,
+`appkit` is always in scope for Phase 0 and Phase 1: it's the one import that isn't the
+`payments_app.models`-style mistake this section warns about.
+
 So the process below front-loads two things:
 
 1. **A contract defined before any code exists** (§2, Phase 0). What this app's models,
@@ -82,6 +91,7 @@ way that "never couple to the host" isn't.
 | Which settings are configurable vs. fixed? | Becomes `conf.py`'s `DEFAULTS` and the README block |
 | Which `.env` keys are required vs. optional? | Required-and-missing must fail at startup |
 | Celery, `django.tasks`, or neither? | Changes whether the host must run a worker for this app to function |
+| Which shared helpers does this app need from `appkit`, and does `appkit` already have all of them? | `appkit` (`APP-DESIGN.md` §1.1) is the one named exception to "an app never depends on an app" — but if the answer to the second half is "no," that gap is an `appkit` minor release, not a local reimplementation in this app's own `utils.py` |
 
 ---
 
@@ -143,25 +153,33 @@ Phase 1: the package skeleton. docs/APP-DESIGN.md §2 and §3.
 
 Create the repo structure from §2 exactly, then:
 1. backend/pyproject.toml complete per §3.1 — build config with include-package-data, the
-   dependencies from docs/CONTRACT.md item 8 with WIDE RANGES per §1.1, [dependency-groups]
-   dev + test, [tool.uv] default-groups, and the ruff / mypy / pytest / coverage config.
+   dependencies from docs/CONTRACT.md item 8 with WIDE RANGES per §1.1, PLUS
+   "appkit>=1.0,<2.0" (unless this repo IS appkit — see §0), [dependency-groups] dev + test,
+   [tool.uv] default-groups, and the ruff / mypy / pytest / coverage config.
 2. The flake8-tidy-imports banned-api block, listing every OTHER app package in our
-   ecosystem plus this package's own factories module (test paths exempted).
+   ecosystem plus this package's own factories module (test paths exempted). Do NOT add a
+   line for appkit — it's a declared dependency every app is expected to import, not a
+   sibling app the rule exists to keep out (§1.1).
 3. backend/MANIFEST.in so locale/, templates/, and static/ ship in the wheel.
 4. .python-version, .gitignore, .pre-commit-config.yaml.
 5. src/notifications_app/__init__.py, apps.py (AppConfig with a translatable verbose_name),
    and conf.py per §3.5 with the DEFAULTS from CONTRACT.md item 5.
 6. Empty-but-present: models.py, views.py, serializers.py, permissions.py, signals.py,
-   services.py, urls.py, urls_admin.py, admin.py, admin_views.py, tasks.py, utils.py,
-   factories.py — each with a docstring stating its role per the spec.
+   services.py, urls.py, urls_admin.py, admin.py, admin_views.py, tasks.py, factories.py
+   — each with a docstring stating its role per the spec. utils.py is NOT on this list
+   anymore — create it only if the app has genuinely private helpers with nowhere else to
+   go; the shared cache mixin and error handler come from appkit, not from a bundled
+   utils.py (§4).
 
 Run `uv sync`, then `uv build`, and paste both outputs.
 ```
 
-**Verify:** `uv sync` and `uv build` both succeed; `dependencies` uses ranges, not `==`.
+**Verify:** `uv sync` and `uv build` both succeed; `dependencies` uses ranges, not `==`, including
+on `appkit`.
 
-**Review for:** exact pins on `django`/`djangorestframework` (the most consequential mistake in
-this whole document — see §5); `include-package-data` present; `banned-api` populated.
+**Review for:** exact pins on `django`/`djangorestframework`/`appkit` (the most consequential
+mistake in this whole document — see §5); `include-package-data` present; `banned-api` populated
+and NOT listing `appkit`.
 
 ### Phase 2 — Models, migrations, admin
 
@@ -266,31 +284,35 @@ passes against broken code is common and worthless); `--fail-on-warn` is clean.
 Phase 5: the frontend half. docs/APP-DESIGN.md §12 and docs/CONTRACT.md item 6.
 
 Create in frontend/:
-- package.json per §12's excerpt — react and @tanstack/react-query as peerDependencies
-  ONLY, openapi-typescript as a devDependency, a generate:types script, an exports map with
-  just ".", files: ["dist"], version matching backend/pyproject.toml
+- package.json per §12's excerpt — react, @tanstack/react-query, AND appkit as
+  peerDependencies ONLY (unless this repo IS appkit — see §0), openapi-typescript as a
+  devDependency, a generate:types script, an exports map with just ".", files: ["dist"],
+  version matching backend/pyproject.toml
 - Run npm run generate:types (needs backend/schema.yml from Phase 4) to produce
   src/schema.d.ts. Never hand-edit this file — it's regenerated, not written.
 - tsconfig.json (strict), tsconfig.build.json, vitest.config.ts, eslint config
 - src/types.ts — hand-written, NOT a copy of the serializers: re-export narrowed aliases
   from schema.d.ts (export type Notification = components["schemas"]["Notification"]) plus
-  the HttpClient interface (get/post/patch/delete) and the error envelope shape, per §12's
-  "Generated types" and "What stays hand-written" — those two are the only things typed by
-  hand here.
-- src/api/context.tsx — the provider + config hook that receives the host's client and
-  basePath at runtime; §12's "SDK-to-host client contract" — never a hardcoded base URL,
-  never an import of any host module
+  whatever app-specific shape genuinely can't come from the schema, per §12's "Generated
+  types" and "What stays hand-written". Do NOT declare HttpClient or an error-envelope type
+  here — both come from appkit now; re-export HttpClient if convenient
+  (export type { HttpClient } from "appkit"), never redeclare it.
+- src/api/config.ts — NOT a provider. One internal binding of this app's namespace and
+  default basePath to appkit's shared useApiClient hook, per §12's "SDK-to-host client
+  contract": `export const useNotificationsConfig = () => useApiClient("notifications",
+  "/api/v1/notifications");`. Never exported from index.ts.
 - src/api/manager.ts — instance-based, constructed from the injected client and basePath
   (never a static class); one method per endpoint; the ONLY place a raw HTTP call exists;
   never exported from index.ts
-- src/hooks/* — thin react-query wrappers that read the config hook, build the manager
-  with useMemo, one per CONTRACT.md item 6, with an exported key factory per hook family
-  and mutations invalidating the right keys
-- src/index.ts — the provider, the HttpClient type, hooks, key factories, and other types
-  only. Never the manager, never the config hook.
+- src/hooks/* — thin react-query wrappers that read the app's own config hook from
+  api/config.ts, build the manager with useMemo, one per CONTRACT.md item 6, with an
+  exported key factory per hook family and mutations invalidating the right keys
+- src/index.ts — hooks, key factories, and this app's own types only. NOT a provider —
+  appkit's ApiClientProvider is what a host mounts, and this app never re-exports it. Never
+  the manager, never the config hook.
 
 Then tests/frontend with Vitest + MSW per §7.7: success AND error path per hook,
-onUnhandledRequest: "error", retry: false. Wrap test renders in the app's own provider
+onUnhandledRequest: "error", retry: false. Wrap test renders in appkit's ApiClientProvider
 with a stub client satisfying HttpClient — not a real fetcher.
 
 Run npx tsc --noEmit, npm run lint, npm run test, npm run build. Paste all four.
@@ -300,12 +322,15 @@ Run npx tsc --noEmit, npm run lint, npm run test, npm run build. Paste all four.
 `git diff --exit-code src/schema.d.ts` after re-running `generate:types` is clean (the CI
 check from §10.1 — worth running now rather than finding out in CI).
 
-**Review for:** `react` accidentally in `dependencies` instead of `peerDependencies` (causes
-two-copies-of-React bugs in hosts that are miserable to debug); the manager or the config
-hook (`useXConfig`) leaking through `index.ts`; the manager built as a static class instead
-of constructed via `useMemo` from the injected client; anything in `types.ts` that duplicates
-a type `schema.d.ts` already exports instead of re-exporting it — that's the hand-written
-half quietly regaining the drift risk generation exists to remove.
+**Review for:** `react`, `@tanstack/react-query`, or `appkit` accidentally in `dependencies`
+instead of `peerDependencies` (causes two-copies-of-React-or-appkit bugs in hosts that are
+miserable to debug — for `appkit` specifically, `useApiClient` starts returning `null` in
+half the tree); the manager or this app's own config hook (`useXConfig`) leaking through
+`index.ts`; a `NotificationsProvider` or any other provider being exported at all — there
+shouldn't be one; the manager built as a static class instead of constructed via `useMemo`
+from the injected client; `HttpClient` or the error envelope redeclared in `types.ts` instead
+of imported from `appkit` — that's the hand-written half quietly regaining the drift risk
+generation (and now `appkit`) exists to remove.
 
 ### Phase 6 — Playground
 
@@ -396,7 +421,7 @@ Then give me the exact commands to tag and push v1.0.0.
 
 ```
 Phase 9: real-world verification. In a fresh clone of base-scaffold, install this package at
-v1.0.0 following docs/INTEGRATION-GUIDE.md §2 — all 13 steps, using only README.md for
+v1.0.0 following docs/INTEGRATION-GUIDE.md §2 — all 15 steps, using only README.md for
 configuration values. Don't use anything you know from building the package.
 
 Report every step that didn't work as documented, every value the README omitted, and every
@@ -416,8 +441,9 @@ Finally: add the app to the registry (`BASE-DESIGN.md` §11.3).
 Periodically ask outright:
 
 > "List everything in this package that depends on something outside it. For each, say whether
-> it's `settings.AUTH_USER_MODEL` (allowed), a bundled internal equivalent (allowed), or a
-> coupling we need to fix."
+> it's `settings.AUTH_USER_MODEL` (allowed), an import from `appkit` declared in
+> `pyproject.toml`/`package.json` (allowed — see `APP-DESIGN.md` §1.1), or a coupling we need
+> to fix."
 
 Run this at the end of phases 3, 4, and 5. It reliably surfaces things a checklist walk-through
 misses, because it asks the agent to enumerate rather than to confirm.
@@ -485,6 +511,7 @@ Ranked by how often they happen and how much they cost:
 | Templates/translations missing after install | package data not declared (§2) | Looks like a host misconfiguration; wastes hours on the wrong side |
 | App works in the first host, breaks in the second | an assumption about host structure (`tools/`, a settings key, a URL prefix) | The failure the whole architecture exists to prevent |
 | Two copies of React in a host | `react` in `dependencies` not `peerDependencies` (§12) | Bizarre hook errors with no obvious cause |
+| Two copies of `appkit` in a host | `appkit` in `dependencies` not `peerDependencies` on the frontend half (§12) | Same shape as the React row, now equally likely since every app declares `appkit` — `useApiClient` returns `null` in half the tree |
 | Throttle scope collides with another app | scope not namespaced (§1.3) | Two correct apps rate-limit each other |
 | `factory-boy` in production installs | factories' dependency in `[project.dependencies]` | Ships test tooling to every host |
 

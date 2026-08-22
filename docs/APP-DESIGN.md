@@ -51,7 +51,10 @@ Therefore:
   ```
 - **App-private dependencies can be tighter**, but still prefer a range. A niche library only this app uses (`stripe`, `twilio`, `qrcode`) is less likely to collide, so `"stripe>=11,<13"` is fine — but `==` is still discouraged, because the moment a second app also needs `stripe`, an exact pin on both sides is a coin flip.
 - **The host pins the exact versions everyone runs against.** The host's `pyproject.toml` + `uv.lock` is where `django==6.0.4` actually gets decided. Apps declare what they *tolerate*; the host decides what *runs*.
-- **Never declare a dependency on another app package.** Not even a loose range. See §6.
+- **Never declare a dependency on another app package.** Not even a loose range. See §6 — with one named exception:
+  - **`appkit` is the exception.** Every app declares `"appkit>=1.0,<2.0"` in `[project.dependencies]` and imports the shared helpers it bundles from it (§4, §12) rather than reimplementing them. The range rule above applies with full force here — `appkit` is the most widely shared dependency in the entire ecosystem, so an exact pin on it is the worst possible place for one: two apps pinning different exact versions of `appkit` is unresolvable in any host that installs both.
+
+    Make the distinction crisp, because this is the rule most likely to be misapplied later: §6 bans an app **reaching sideways into another app's models and services** — an ambient assumption that some other app just happens to be installed in the same host. A declared shared dependency is a different category entirely: it's explicit, versioned, resolved by `uv`, and sitting right there in `pyproject.toml` for anyone to see — the same category as the `jwt-core` dependency an OTP app would declare, not the category §6 exists to prevent. The test is mechanical: *is it in `[project.dependencies]`?* If yes, it's a declared dependency. If no, and you're importing it anyway, that's the §6 violation.
 - **Test/lint tooling never appears in `dependencies`.** It goes in `[dependency-groups]`, which is never installed by a consumer — see §3.
 
 ### 1.2 Private repository access
@@ -115,7 +118,9 @@ notifications-app/                       # the repo
 │           ├── urls.py                    # user-facing endpoints
 │           ├── urls_admin.py              # admin-dashboard endpoints
 │           ├── tasks.py                   # celery / django.tasks — autodiscovered by host
-│           ├── utils.py                   # bundled cache/mixin helpers, see §4
+│           ├── utils.py                   # app-private helpers only, if any — shared cache/
+│           │                                mixin/error-envelope helpers come from the
+│           │                                appkit dependency instead, see §4
 │           ├── factories.py               # factory_boy factories — PUBLIC test surface, §7.3
 │           ├── migrations/
 │           ├── locale/                    # translations, bundled via package data, see §8
@@ -131,8 +136,8 @@ notifications-app/                       # the repo
 │       │   ├── useNotifications.ts
 │       │   └── useSendNotification.ts
 │       ├── api/
-│       │   ├── context.tsx                # provider + config hook — the SDK-to-host
-│       │   │                                client injection point, see §12
+│       │   ├── config.ts                  # one-line binding of this app's namespace/basePath
+│       │   │                                to appkit's shared useApiClient hook, see §12
 │       │   └── manager.ts                 # typed NotificationsManager — the ONLY place
 │       │                                    raw requests happen, see §12
 │       └── types.ts
@@ -433,22 +438,22 @@ The `cd` in each entry is load-bearing. `uv run --project backend mypy` sets env
 
 ## 4. Views, Rate Limiting & API Documentation Standards
 
-- **Caching & error handling.** Every GET/list/retrieve view uses a caching mixin, and every view uses consistent error-handling/response conventions. Because this package must work standalone in *any* host project, it cannot import a host's `backend/tools/` — that folder is project-owned and isn't guaranteed to exist, or to exist at a stable import path, in every host. Instead, bundle a small internal equivalent (`notifications_app/utils.py`) with the same shape as the scaffold's `tools/cache.py` / `tools/mixins.py` — see `BASE-DESIGN.md` §3 for the exact envelope (`{"error": {"code", "message", "details", "request_id"}}` and the fixed `code` list) that shape means in practice. If duplication across several apps starts to hurt, the follow-up is a small shared toolkit package every app depends on explicitly in `pyproject.toml` — an explicit dependency declaration, never an assumption about the host's internals.
+- **Caching & error handling.** Every GET/list/retrieve view uses a caching mixin, and every view uses consistent error-handling/response conventions. Because this package must work standalone in *any* host project, it cannot import a host's `backend/tools/` — that folder is project-owned and isn't guaranteed to exist, or to exist at a stable import path, in every host. Instead, every app declares `appkit>=1.0,<2.0` (§1.1) and imports `CachedListMixin` from `appkit.mixins` and `standard_exception_handler` from `appkit.exceptions` — see `BASE-DESIGN.md` §3 for the exact envelope (`{"error": {"code", "message", "details", "request_id"}}` and the fixed `code` list) those helpers produce. This is a declared, versioned dependency, not an assumption about the host's internals — see §1.1 for why `appkit` is the one named exception to "never depend on another app package."
 - **Rate limiting.** Every view declares a `throttle_scope`, prefixed per §1.3, and every scope is listed in the app's `README.md` (§8) so a host knows what to add to `REST_FRAMEWORK['DEFAULT_THROTTLE_RATES']`. No view ships without one.
 - **API documentation.** Every view/viewset carries a complete `drf-spectacular` `@extend_schema` (or `extend_schema_view`) — summary, description, request/response serializers, and `tags=["notifications"]` for public views or `tags=["notifications-admin"]` for admin-dashboard views, so Swagger stays grouped per app and per surface.
 - **Pagination.** List views that can return unbounded data set an explicit `pagination_class` rather than relying on the host's `DEFAULT_PAGINATION_CLASS`, which the app can't know. The page-size default is documented in the README block.
 
 ```python
 # notifications_app/views.py — every view in every app should structurally match this
-# shape: bundled caching mixin, throttle_scope, full schema, a real permission class,
+# shape: appkit's caching mixin, throttle_scope, full schema, a real permission class,
 # and an optimized queryset.
+from appkit.mixins import CachedListMixin   # shared helper, declared as a dependency, per above
 from drf_spectacular.utils import extend_schema
 from rest_framework import generics
 
 from .models import Notification
 from .permissions import IsNotificationOwner
 from .serializers import NotificationSerializer
-from .utils import CachedListMixin   # this app's own bundled cache helper, per above
 
 
 @extend_schema(
@@ -482,7 +487,7 @@ Every app supports two separate admin surfaces, and its own `permissions.py` gat
 
 ## 6. Inter-App Communication (Signals & Services)
 
-An app package **must never import another app package.** The only two things it exposes for production use are `signals.py` (things that happened) and `services.py` (things you can ask it to do) — plus `factories.py` as a *test-only* third surface, see §7.3. Wiring two apps together is the host project's job, done in `backend/core/` — never inside either app. See `INTEGRATION-GUIDE.md` §4 for the full host-side pattern; here's the app side of the same example:
+An app package **must never import another app package** — with the one named exception at §1.1: `appkit`, which every app declares as an explicit, versioned dependency rather than reaching for sideways. Everything below is about the case §1.1's exception doesn't cover — one app reaching into another app's own models, services, or signals without either app declaring the other. The only two things an app exposes for that kind of production use are `signals.py` (things that happened) and `services.py` (things you can ask it to do) — plus `factories.py` as a *test-only* third surface, see §7.3. Wiring two apps together is the host project's job, done in `backend/core/` — never inside either app. See `INTEGRATION-GUIDE.md` §4 for the full host-side pattern; here's the app side of the same example:
 
 ```python
 # notifications_app/signals.py
@@ -918,17 +923,30 @@ This is a recommendation, not something that auto-registers — the host creates
 ## Installation — frontend
 
 ```bash
+npm install "github:yourorg/appkit#v1.2.0:frontend"          # if not already installed
 npm install "github:yourorg/notifications-app#v1.4.2:frontend"
 ```
 
-## Usage — mount the provider, then import hooks from the package root
+## Usage — add this app's basePath to the shared provider, then import hooks from the package root
+
+**basePath key: `notifications`** — add it to the `basePaths` map on the `ApiClientProvider`
+every installed app shares (one provider for the whole host, mounted once — see
+`INTEGRATION-GUIDE.md` §2 step 11):
 
 ```tsx
-// frontend/app/providers.tsx — one-time wiring, see INTEGRATION-GUIDE.md §2 step 10
-import { NotificationsProvider } from "notifications-app";
+// frontend/app/providers.tsx — one-time wiring per host, one basePaths entry per app
+import { ApiClientProvider } from "appkit";
 import { apiClient } from "@/lib/api-client";
 
-<NotificationsProvider client={apiClient}>{children}</NotificationsProvider>;
+<ApiClientProvider
+  client={apiClient}
+  basePaths={{
+    // ...entries for already-installed apps stay here
+    notifications: "/api/v1/notifications",
+  }}
+>
+  {children}
+</ApiClientProvider>;
 ```
 
 ```tsx
@@ -943,9 +961,10 @@ function NotificationBell() {
 
 Requires the host's `@tanstack/react-query` `QueryClientProvider` to already be mounted
 (it is, by default, in the scaffold's `frontend/lib/query-client.ts` — see
-`BASE-DESIGN.md` §3) and `NotificationsProvider` mounted above wherever these hooks are
-used (see `APP-DESIGN.md` §12's "SDK-to-host client contract"). No further frontend
-configuration needed.
+`BASE-DESIGN.md` §3) and `appkit`'s `ApiClientProvider` mounted above wherever these hooks
+are used, with the `notifications` key above present in its `basePaths` map (see
+`APP-DESIGN.md` §12's "SDK-to-host client contract"). No further frontend configuration
+needed.
 ````
 
 An app that ships without every one of these sections isn't done — see §11's release checklist, and §10's CI job that fails when the README's declared throttle scopes don't match the scopes actually present in the code.
@@ -1320,8 +1339,8 @@ Any entry that requires the host to change something says so explicitly, under a
 The `frontend/` half of a package is a small SDK — typed hooks and a fetcher, nothing more. It follows the same decoupling discipline as the backend half, adapted to React:
 
 - **One entrypoint.** Everything a host can use is exported from `frontend/src/index.ts`. Nothing under `hooks/`, `api/`, or `types.ts` is imported directly by a host — only through `index.ts`. This keeps the internal file layout free to change without it being a breaking change.
-- **Peer dependencies, not bundled ones.** `react`, `@tanstack/react-query` (or `axios`, whichever the app actually uses) are declared as `peerDependencies`, never as regular `dependencies`. Bundling them would mean a host ends up with two copies of React or two separate `QueryClient` instances — a well-known source of hard-to-debug bugs. The host's own copy, already provided via the scaffold's `frontend/lib/query-client.ts` (see `BASE-DESIGN.md` §3), is what every hook plugs into.
-- **No inter-app frontend dependencies.** Exactly like the backend half (§6), a package's `frontend/` must never depend on or import another reusable app's frontend package. If two apps' UIs need to be combined, that composition happens in the host's own `frontend/` code — see `INTEGRATION-GUIDE.md` §4.
+- **Peer dependencies, not bundled ones.** `react`, `@tanstack/react-query` (or `axios`, whichever the app actually uses), and **`appkit`** are declared as `peerDependencies`, never as regular `dependencies`. Bundling any of them would mean a host ends up with two copies — two copies of React, two `QueryClient` instances, or two `appkit`s each holding their own React context, so a host-mounted `ApiClientProvider` and an SDK's `useApiClient` resolve against different instances and the hook sees `null`. Same failure shape as the React/react-query case, for the same reason. The host's own copy, already provided via the scaffold's `frontend/lib/query-client.ts` (see `BASE-DESIGN.md` §3) and `appkit`'s `ApiClientProvider` (`INTEGRATION-GUIDE.md` §2), is what every hook plugs into.
+- **No inter-app frontend dependencies — with the same named exception as §1.1.** Exactly like the backend half (§6, §1.1), a package's `frontend/` must never depend on or import another reusable app's frontend package. If two apps' UIs need to be combined, that composition happens in the host's own `frontend/` code — see `INTEGRATION-GUIDE.md` §4. `appkit` is the one declared exception, on both halves, for the same reason: it's an explicit, versioned `peerDependency`, not an ambient assumption about a sibling app.
 - **Typed end to end, strictly.** `tsconfig.json` sets `"strict": true`; `types.ts` exports the request/response shapes the hooks use, so a host gets full type safety with no separate `@types` package and no `any`. Those shapes are **generated** from the app's own OpenAPI schema, not hand-written — see "Generated types" below.
 - **The concrete HTTP client is injected, never imported.** An app's `frontend/` can't `import` the host's `frontend/lib/api-client.ts` — that file lives in the host project, not in the publishable package, and the SDK has to build and ship standalone (§1). See "SDK-to-host client contract" below for the mechanism.
 
@@ -1337,7 +1356,8 @@ The `frontend/` half of a package is a small SDK — typed hooks and a fetcher, 
   "files": ["dist"],
   "peerDependencies": {
     "react": ">=18",
-    "@tanstack/react-query": ">=5"
+    "@tanstack/react-query": ">=5",
+    "appkit": ">=1.0.0 <2.0.0"
   },
   "devDependencies": {
     "openapi-typescript": "^7.13.0"
@@ -1393,82 +1413,76 @@ openapi-typescript's own `--read-write-markers` flag was considered and **reject
 
 **Enum stability.** `drf-spectacular` names each `choices` field's value set into its own component (`StatusEnum`, following `ENUM_SUFFIX`'s default) and renders a JSDoc comment listing each choice's label — verified above: a three-value `ChoiceField` produced `type StatusEnum = "active" | "inactive" | "archived";` with the human-readable labels preserved as a comment. Two fields sharing the same choice values under different names, or the same field name with different choice sets across serializers, make the naming unstable (`drf-spectacular` appends disambiguating suffixes and warns). An unstable component name is an unstable *type* name in `schema.d.ts`, which would make `schema.d.ts` churn on every regeneration for no functional reason — noisy enough that a team stops trusting the CI diff gate below. Set `ENUM_NAME_OVERRIDES` in `SPECTACULAR_SETTINGS` the moment `--fail-on-warn` flags a collision; don't wait for it to become a habit of ignoring warnings.
 
-**What stays hand-written**, in `types.ts`, because nothing in an OpenAPI schema can express it:
+**What stays hand-written**, in `types.ts`, because nothing in an OpenAPI schema can express it — and it's shorter than it used to be, because two of the three things that used to live here now come from `appkit` instead:
 
-- **`HttpClient`** — describes the shape of the *host's* client, not a response the API sends. See "SDK-to-host client contract" below.
-- **The error envelope** (`{"error": {"code", "message", "details", "request_id"}}`) — produced by the bundled exception handler (§4) at request-handling time, not declared on any serializer, so `drf-spectacular` has no field to introspect. If a view's error responses need documenting for Swagger's sake, that's a job for `@extend_schema(responses=...)` on the view — but the shape still has to be typed by hand in `types.ts`, since it doesn't originate from a serializer either way.
+- ~~`HttpClient`~~ — moved to `appkit`. Re-exported from this app's own `types.ts` for convenience (`export type { HttpClient } from "appkit"`), never redeclared.
+- ~~The error envelope~~ — moved to `appkit` as `ApiErrorEnvelope` / `ApiErrorCode`. Same reasoning as before (produced by the exception handler at request-handling time, not declared on any serializer, so `drf-spectacular` has no field to introspect) — it just now has one definition instead of one per app.
+- Whatever's left is genuinely app-specific: request/response shapes the schema can't express, if any. Most apps have nothing left to hand-write here at all.
 
 ### SDK-to-host client contract
 
-Every app's SDK has to make HTTP calls, but its `manager.ts` can't `import { apiClient } from "frontend/lib/api-client"` — that file is project-owned code living in the host's repo (`BASE-DESIGN.md` §3), and an app package builds and ships as a standalone `dist/` with no dependency on any particular host's file layout (§1). The mechanism is runtime dependency injection through a React context, not a shared import: the host constructs its own client — the `apiClient` instance from `frontend/lib/api-client.ts` — and hands it to the SDK via a provider component the SDK itself exports. This needs no shared package, because TypeScript is structurally typed: the SDK declares the shape of client it needs, and the host's concrete `ApiClient` satisfies that shape by having the right methods, not by declaring that it implements anything.
+Every app's SDK has to make HTTP calls, but its `manager.ts` can't `import { apiClient } from "frontend/lib/api-client"` — that file is project-owned code living in the host's repo (`BASE-DESIGN.md` §3), and an app package builds and ships as a standalone `dist/` with no dependency on any particular host's file layout (§1). The mechanism is runtime dependency injection through a React context, not a shared import: the host constructs its own client — the `apiClient` instance from `frontend/lib/api-client.ts` — and hands it to every installed SDK via **one shared provider that every app depends on**, rather than a bespoke provider each app ships for itself.
 
-Every app declares that shape in `types.ts`, matching the public surface of `frontend/lib/api-client.ts`'s `ApiClient`:
+That shared provider is `appkit`'s `ApiClientProvider` / `useApiClient`, not something this app defines. `appkit` owns the `HttpClient` *interface* and the provider/hook pair — it never owns a client *implementation*. The host still constructs the real `ApiClient` (reads `NEXT_PUBLIC_API_URL`, decides the credentials mode, handles CSRF — all host configuration, `BASE-DESIGN.md` §3) and hands that instance to `ApiClientProvider`. If `appkit` shipped its own client implementation instead of just the interface, that implementation would have to read the host's env and configuration itself — reintroducing exactly the host-coupling this whole mechanism exists to prevent. **Don't "helpfully" move a client implementation into `appkit`** — the interface-only boundary is deliberate, not an oversight to fix later.
+
+This needs no shared package for the *typing* to work — TypeScript is structurally typed, so the host's concrete `ApiClient` satisfies `HttpClient` by having the right methods, not by declaring that it implements anything — but a shared package is exactly what's needed for the *provider* to work, so a host mounts one `ApiClientProvider` instead of one differently-named provider per installed app:
 
 ```ts
-// frontend/src/types.ts (excerpt)
+// appkit/src/index.ts (excerpt) — for reference; this ships in appkit, not in this app
 export interface HttpClient {
   get<T>(path: string, init?: RequestInit): Promise<T>;
   post<T>(path: string, body?: unknown, init?: RequestInit): Promise<T>;
   patch<T>(path: string, body?: unknown, init?: RequestInit): Promise<T>;
   delete<T>(path: string, init?: RequestInit): Promise<T>;
 }
-```
 
-and ships a provider plus an internal config hook in `api/context.tsx`:
-
-```tsx
-// frontend/src/api/context.tsx
-"use client";
-
-import { createContext, useContext, type ReactNode } from "react";
-import type { HttpClient } from "../types";
-
-interface NotificationsConfig {
-  client: HttpClient;
-  basePath: string;
-}
-
-const NotificationsContext = createContext<NotificationsConfig | null>(null);
-
-export interface NotificationsProviderProps {
+export interface ApiClientProviderProps {
   /** Any client satisfying HttpClient — normally the host's frontend/lib/api-client.ts
    *  apiClient, passed in as-is. */
   client: HttpClient;
-  /** Where this app's backend is mounted (INTEGRATION-GUIDE.md §3) — a provider prop, not
-   *  a path baked into the manager, since the mount point is the host's choice, not the
-   *  app's. Defaults to the prefix this app's own README suggests. */
-  basePath?: string;
-  children: ReactNode;
+  /** basePath per installed app, keyed by the app's own namespace (§1.3) — see
+   *  "Where basePath comes from now" below. */
+  basePaths?: Record<string, string>;
+  children: React.ReactNode;
 }
 
-const DEFAULT_BASE_PATH = "/api/v1/notifications";
+export function ApiClientProvider(props: ApiClientProviderProps): React.ReactElement;
 
-export function NotificationsProvider({
-  client,
-  basePath = DEFAULT_BASE_PATH,
-  children,
-}: NotificationsProviderProps) {
-  return (
-    <NotificationsContext.Provider value={{ client, basePath }}>
-      {children}
-    </NotificationsContext.Provider>
-  );
-}
-
-export function useNotificationsConfig(): NotificationsConfig {
-  const config = useContext(NotificationsContext);
-  if (!config) {
-    throw new Error(
-      "useNotificationsConfig must be used within <NotificationsProvider>. Mount " +
-        "<NotificationsProvider client={apiClient}> in frontend/app/providers.tsx — " +
-        "see this package's README.",
-    );
-  }
-  return config;
-}
+/** Called from an app's own api/config.ts, never directly by a host. `key` is this app's
+ *  namespace; `defaultBasePath` is what the app's own README suggests if the host's
+ *  basePaths map has no entry for `key`. */
+export function useApiClient(key: string, defaultBasePath: string): { client: HttpClient; basePath: string };
 ```
 
-`useNotificationsConfig()` throwing instead of silently returning `undefined` is deliberate: a hook that got `client: undefined` would fail three layers away from the actual mistake, inside a `fetch` call, with an error that says nothing about a missing provider. Both `NotificationsProvider` and the `HttpClient` type are exported from `index.ts`; `useNotificationsConfig` itself is not — a host mounts the provider but never calls the config hook directly.
+Each app's own `frontend/src/api/config.ts` does nothing more than bind its namespace and default to that shared hook:
+
+```ts
+// frontend/src/api/config.ts — internal, never exported from index.ts
+import { useApiClient } from "appkit";
+
+export const useNotificationsConfig = () => useApiClient("notifications", "/api/v1/notifications");
+```
+
+`useApiClient` throws if called outside an `ApiClientProvider` rather than silently returning `undefined` — deliberate, same reasoning as before: a hook that got `client: undefined` would fail three layers away from the actual mistake, inside a `fetch` call, with an error that says nothing about a missing provider. `ApiClientProvider` and `HttpClient` are exported from `appkit`'s own entrypoint; `useApiClient` is exported too (unlike a per-app config hook, it's meant to be called — indirectly, through each app's `api/config.ts` — by every installed app), but this app's own `useNotificationsConfig` wrapper is not exported from `index.ts` — a host mounts the provider and imports hooks, but never calls a config hook directly.
+
+**Where `basePath` comes from now.** Each app still owns its own default basePath — the mount prefix is the host's choice (`INTEGRATION-GUIDE.md` §3), not the app's. Of the shapes considered, the recommendation is **one root provider carrying a `basePaths` map keyed by namespace**, resolved at the host level once instead of per app:
+
+```tsx
+// host frontend/app/providers.tsx — mounted once, not once per installed app
+import { ApiClientProvider } from "appkit";
+import { apiClient } from "@/lib/api-client";
+
+<ApiClientProvider
+  client={apiClient}
+  basePaths={{ notifications: "/api/v1/notifications", payments: "/billing/api" }}
+>
+  {children}
+</ApiClientProvider>;
+```
+
+Namespaces are already collision-free per §1.3, so keys can't collide between apps. The trade-off, stated plainly: the key is stringly typed and unenforced by the compiler — a typo in the host's `basePaths` map silently falls back to the app's own default rather than failing to build, and the requests 404 at runtime instead. That's the price of collapsing N providers into one; it's mitigated by documenting the exact key in the app's README (§8) and by INTEGRATION-GUIDE.md §2 making it an explicit wiring step.
+
+Two alternatives were considered and rejected: a `basePath` argument baked into `useApiClient` at each app's own call site removes the host's ability to choose a different mount point at all; a per-app provider prop (each app back to shipping `<NotificationsProvider basePath="...">`) keeps compile-time checking but reinstates the exact provider-nesting problem this design exists to remove. The escape hatch, for the rare app needing a differently-configured client (an auth app on `credentials: "include"`, say): a second `ApiClientProvider` nested deeper in the tree wins for that subtree, same as any React context.
 
 ### Manager & hook conventions
 
@@ -1502,7 +1516,7 @@ export class NotificationsManager {
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { NotificationsManager } from "../api/manager";
-import { useNotificationsConfig } from "../api/context";
+import { useNotificationsConfig } from "../api/config";
 
 export const notificationKeys = {
   all: ["notifications"] as const,
@@ -1525,7 +1539,7 @@ export function useNotifications() {
 import { useMemo } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { NotificationsManager } from "../api/manager";
-import { useNotificationsConfig } from "../api/context";
+import { useNotificationsConfig } from "../api/config";
 import { notificationKeys } from "./useNotifications";
 import type { SendNotificationPayload } from "../types";
 
@@ -1545,19 +1559,16 @@ export function useSendNotification() {
 
 ```ts
 // frontend/src/index.ts — the only file a host ever imports from; note the
-// manager and useNotificationsConfig are never exported here, only the provider,
-// hooks, key factories, and types
-export { NotificationsProvider } from "./api/context";
+// manager and useNotificationsConfig are never exported here, only the hooks,
+// key factories, and types. There is no provider to export — the host mounts
+// appkit's ApiClientProvider once, per "SDK-to-host client contract" above.
 export { useNotifications, notificationKeys } from "./hooks/useNotifications";
 export { useSendNotification } from "./hooks/useSendNotification";
-export type { HttpClient, Notification, SendNotificationPayload } from "./types";
+export type { Notification, SendNotificationPayload } from "./types";
+export type { HttpClient } from "appkit";
 ```
 
 Exporting the `notificationKeys` factory is deliberate: a host sometimes needs to invalidate this app's cache from its own code (after a cross-app action composed in `frontend/app/`, per `INTEGRATION-GUIDE.md` §4). Without the factory, the host hardcodes the key string and silently breaks when the SDK changes it.
-
-### When provider nesting gets unwieldy
-
-Three or four installed apps means three or four providers wrapped around `frontend/app/providers.tsx`'s children — noisy but harmless. If a host installing a fifth SDK finds the nesting itself has become the actual complaint (not any one app's design), the sanctioned escape hatch is a minimal shared `@yourorg/api-contract` package holding only the `HttpClient` interface and one generic provider/hook pair, which every app then declares as a `peerDependency` instead of redeclaring its own copy. Don't build this before that point: a shared package built ahead of knowing its real shape is exactly the premature coupling §1's decoupling discipline exists to prevent. Two or three apps' worth of actual usage is what tells you what the shared interface should contain — guessing it up front is how coupling comes back in through the side door.
 
 ### Frontend security checklist
 
@@ -1569,5 +1580,5 @@ Parallel to the backend checklist in §9 — a frontend half isn't done until ea
 - No hardcoded base URLs, API keys, or secrets anywhere in the package — the base URL always comes from the host's shared client configuration.
 - A mutation hook for a destructive or sensitive action (`useDeletePaymentMethod`, `useCreatePayment`) never fires on mount or on a passive render — it only fires from an explicit user action, so a stray re-render can't trigger a real charge or deletion.
 - Every manager method and hook is typed against `types.ts` — no `any` on a request/response shape, since a silently wrong type is exactly how a backend contract drifting out from under a hook turns into a runtime bug nobody notices until it's in production.
-- `react` and `@tanstack/react-query` stay `peerDependencies`, never bundled.
+- `react`, `@tanstack/react-query`, and `appkit` stay `peerDependencies`, never bundled.
 - `npm audit --audit-level=high` passes (CI job, §10).
