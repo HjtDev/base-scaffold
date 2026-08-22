@@ -51,7 +51,10 @@ SSH_PORT, SSH_KEY_PATH, HEALTH_TIMEOUT, HEALTH_INTERVAL, SKIP_NGINX_RELOAD.
 Must be run from a clean git working tree — there is no override for that
 check. This script rsyncs the working tree, not a git ref, so a clean tree
 is the only thing that makes "what commit is production running" answerable
-after the fact; see DEPLOYED_VERSION on the server.
+after the fact; see $SERVER_PATH/DEPLOYED_VERSION on the server — an
+append-only history of every deploy that passed verification, oldest first,
+last 20 kept. It's the rollback source of truth: BASE-DESIGN.md §9's
+"Rolling back" reads the line before the last one as the rollback target.
 EOF
 }
 
@@ -264,13 +267,6 @@ rsync -az --delete \
   --exclude='*.pyc' \
   ./ "${SERVER_USER}@${SERVER_HOST}:${SERVER_PATH}/"
 
-# Record what actually shipped — the payoff for step 3's strict clean-tree check.
-DEPLOYED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-DEPLOYED_BY="$(whoami)@$(hostname)"
-printf 'commit: %s\ndescribe: %s\ndeployed_at: %s\ndeployed_by: %s\n' \
-  "${DEPLOYED_SHA}" "${DEPLOYED_DESCRIBE}" "${DEPLOYED_AT}" "${DEPLOYED_BY}" \
-  | remote "cat > '${SERVER_PATH}/DEPLOYED_VERSION'"
-
 # ---------------------------------------------------------------------------------------
 # step 7: confirm required .env.prod files exist on the server
 # ---------------------------------------------------------------------------------------
@@ -437,6 +433,37 @@ if (( FAILED_SERVICES > 0 )); then
   die "${FAILED_SERVICES} service(s) failed verification — see logs above."
 fi
 log "All services running and healthy."
+
+# ---------------------------------------------------------------------------------------
+# step 12b: record the release — ONLY now, after verification passed. DEPLOYED_VERSION is
+# append-only, not overwritten: a failed deploy (anything that died before this point)
+# writes nothing, so every line in the file is a release that actually served traffic.
+# This is what makes "Rolling back" (BASE-DESIGN.md §9) possible — it reads the line
+# before the last one as the rollback target, which only works if history survives the
+# deploy that made rollback necessary.
+# ---------------------------------------------------------------------------------------
+
+DEPLOYED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+DEPLOYED_BY="$(whoami)@$(hostname)"
+NEW_ENTRY="$(printf '%s  %s  %s  %s' "${DEPLOYED_AT}" "${DEPLOYED_SHA}" "${DEPLOYED_DESCRIBE}" "${DEPLOYED_BY}")"
+
+HISTORY_HEADER='# Deploy history — newest last. Each line is a deploy that passed verification
+# (all containers running + healthy). Failed deploys append nothing. Last 20 kept.
+#
+# deployed_at            commit                                    describe   deployed_by'
+
+# Strip any existing header/comments, keep only prior data lines — the header above is
+# rewritten fresh every time so there is never more than one copy of it.
+EXISTING_ENTRIES="$(remote "test -f '${SERVER_PATH}/DEPLOYED_VERSION' && grep -v '^#' '${SERVER_PATH}/DEPLOYED_VERSION' || true")"
+
+TRIMMED_ENTRIES="$(printf '%s\n%s\n' "${EXISTING_ENTRIES}" "${NEW_ENTRY}" | sed '/^$/d' | tail -n 20)"
+
+{
+  printf '%s\n' "${HISTORY_HEADER}"
+  printf '%s\n' "${TRIMMED_ENTRIES}"
+} | remote "cat > '${SERVER_PATH}/DEPLOYED_VERSION'"
+
+log "Recorded release in DEPLOYED_VERSION: ${DEPLOYED_SHORT} (${DEPLOYED_DESCRIBE})"
 
 # ---------------------------------------------------------------------------------------
 # step 13: reload nginx, only if nginx -t passes. nginx is host-level, not a compose
