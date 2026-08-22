@@ -45,7 +45,8 @@ python3 -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).de
 # stdlib only — cryptography isn't installed until step 5, and its own Fernet.generate_key()
 # output is byte-for-byte the same shape as this (32 random bytes, urlsafe-base64), so either
 # is a valid key; this form just works before `uv sync` has run.
-# paste both into backend/.env, then fill in DB creds and PROJECT_NAME
+# paste both into backend/.env, then fill in the DB creds below them.
+# (PROJECT_NAME lives in the root .env, not backend/.env — step 3 already set it there.)
 
 # 5. Python + Node dependencies
 cd backend && uv sync --locked && cd ..    # --locked proves pyproject.toml and uv.lock agree
@@ -60,13 +61,15 @@ docker compose up --build
 # 8. First superuser
 docker compose exec backend python manage.py createsuperuser
 
-# 9. Sanity check
-open http://localhost:8000/healthz/     # 200
-open http://localhost:8000/api/schema/swagger-ui/
-open http://localhost:3000
+# 9. Sanity check — visit each in a browser (`open` is macOS-only; Linux: `xdg-open`)
+http://localhost:8000/healthz/            # 200
+http://localhost:8000/api/schema/swagger-ui/
+http://localhost:3000
 
-# 10. Commit
-git add . && git commit -m "chore: initial commit from base-scaffold vX.Y.Z"
+# 10. Commit — a fresh clone has no tags yet (step 2 deleted .git), so there's no real
+# version to put in place of vX.Y.Z; either drop that part or fill in the scaffold
+# version/commit you actually cloned from.
+git add . && git commit -m "chore: initial commit from base-scaffold"
 ```
 
 Steps 5–6 are `make install`; step 7 is `make up`; `make check` is the definition of done from
@@ -199,6 +202,34 @@ reports live DB/cache reachability with no auth). If [analytics](#analytics-opti
 enabled, add a second server block for the dashboard — see `docs/UMAMI-ANALYTICS.md` for the
 block and reasoning.
 
+### Smoke-testing the prod stack locally
+
+There's no `--dry-run` for `make deploy`, and `docker-compose.prod.yml` needs a root
+`.env.prod` + `backend/.env.prod` that otherwise live only on the server (§9). To build and
+boot the prod images on a dev machine before ever touching a real server:
+
+```bash
+docker compose down                              # dev and prod share container ports/names —
+cp .env.prod.example .env.prod                   # stop dev first
+cp backend/.env.prod.example backend/.env.prod
+# fill in both — same generators as step 4, plus real DB creds and EMAIL_HOST
+docker compose -f docker-compose.prod.yml --env-file .env.prod build --pull
+docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --remove-orphans
+docker compose -f docker-compose.prod.yml --env-file .env.prod exec backend python manage.py migrate
+docker compose -f docker-compose.prod.yml --env-file .env.prod exec backend python manage.py collectstatic --noinput
+```
+
+**Give it a `PROJECT_NAME` in `.env.prod` different from dev's `.env`, or tear the dev stack's
+volumes down first (`docker compose down -v`).** Compose scopes named volumes
+(`pgdata`, `redisdata`) by `PROJECT_NAME`, and `docker-compose.yml`/`docker-compose.prod.yml`
+both declare a volume literally called `pgdata` — the same `PROJECT_NAME` means the same
+volume. Boot prod on top of a dev-initialized `pgdata` and Postgres reuses the dev cluster
+as-is (it only runs init scripts on an empty volume), so the backend fails its healthcheck
+with `password authentication failed` against credentials that look right but aren't the
+ones actually baked into that volume. `docker compose -f docker-compose.prod.yml --env-file
+.env.prod down -v` clears it. This is purely a same-host local-testing hazard — a real
+deploy target is never also running the dev stack.
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
@@ -208,5 +239,7 @@ block and reasoning.
 | `uv sync --locked` fails | `pyproject.toml` was hand-edited without re-locking | Never hand-edit `backend/uv.lock`. Run `uv lock` (or `uv add`, which does both) and commit the updated lockfile. |
 | `flower`/`mailpit` aren't running | Dev-only tooling sits behind a compose profile | `docker compose --profile tooling up` |
 | `umami`/`umami-db` aren't running | Optional analytics sits behind a compose profile | `docker compose --profile analytics up` (or `make analytics`) |
+| `make build`/`npm run build` fails with `EACCES: permission denied, open '.../frontend/.next/trace'` | `docker compose up` leaves a root-owned mountpoint at `frontend/.next` on the host — a side effect of the anonymous volume declared for it in `docker-compose.yml` (the container's own writes go to that volume's real storage, not this path; this directory is an empty-but-permission-poisoned artifact of container start) | Fully remove the frontend container, not just stop it (`docker compose rm -sf frontend`), then clear the directory as root, e.g. `docker run --rm -v "$PWD/frontend:/f" alpine rm -rf /f/.next` — a plain host-user `rm -rf` fails partway through with the same permission error. Then retry the build. |
+| `make test` prints "Found orphan containers" or "Network ... Resource is still in use" | The dev stack (`make up`) was running when `make test` spun up its own ephemeral Postgres/Redis on `docker-compose.test.yml` | Harmless — both stacks use different container names and ports (55432/56379 vs 5432/6379); the warnings are compose noticing the dev stack's containers/network while tearing down the test one. Tests still pass. |
 | A container is up but unhealthy | Every service has a real healthcheck (§8.2) — "running" isn't "healthy" | `make ps` shows the health column; `make logs` for detail |
 | Rebuild is slow every time | Stale BuildKit cache mounts or a `.dockerignore` gap shipping `.venv`/`node_modules` into the build context | Confirm `backend/.dockerignore`/`frontend/.dockerignore` still exclude them |
