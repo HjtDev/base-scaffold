@@ -36,8 +36,8 @@
 # check is slow and, for npm, destructive to node_modules. `make install` is the lock-drift
 # gate: run it after touching pyproject.toml/uv.lock or package.json/package-lock.json.
 .DEFAULT_GOAL := help
-.PHONY: help install up down stop ps logs shell migrate migrations superuser backup analytics \
-        lint fmt typecheck django-checks test test-fast build check deploy
+.PHONY: help install up down stop ps logs shell migrate migrations superuser backup restore \
+        analytics lint fmt typecheck django-checks test test-fast build check deploy
 
 help:  ## Show this help
 	@grep -E '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | awk -F':.*?## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -72,6 +72,50 @@ backup:        ## pg_dump the dev database to backups/<PROJECT_NAME>-<timestamp>
 	f="backups/$${name:-myproject}-$$(date +%Y%m%d-%H%M%S).sql.gz"; \
 	docker compose exec -T db sh -c 'pg_dump -U "$$POSTGRES_USER" "$$POSTGRES_DB"' | gzip -9 > "$$f"; \
 	echo "Wrote $$f"
+restore:       ## Restore a backup into the dev database: make restore FILE=backups/<name>.sql.gz — drops and recreates the DB, confirms first
+	@if [ -z "$(FILE)" ]; then \
+		echo "Usage: make restore FILE=backups/<name>.sql.gz" >&2; \
+		exit 1; \
+	fi; \
+	if [ ! -f "$(FILE)" ]; then \
+		echo "ERROR: $(FILE) not found." >&2; \
+		exit 1; \
+	fi; \
+	if [ -f .env.prod ] || [ -f backend/.env.prod ]; then \
+		echo "ERROR: .env.prod or backend/.env.prod exists in this repo checkout." >&2; \
+		echo "Those files live ONLY on the production server (BASE-DESIGN.md §4.4/§9) —" >&2; \
+		echo "this looks like a server checkout, not a local dev clone. Refusing to touch" >&2; \
+		echo "it from here. See docs/BASE-DESIGN.md §9 'Restoring a backup' for the" >&2; \
+		echo "server-side procedure." >&2; \
+		exit 1; \
+	fi; \
+	cid=$$(docker compose ps -q db); \
+	if [ -z "$$cid" ]; then \
+		echo "ERROR: the dev 'db' service isn't running (docker compose ps -q db returned nothing)." >&2; \
+		echo "Run 'make up' first." >&2; \
+		exit 1; \
+	fi; \
+	dbname=$$(docker compose exec -T db sh -c 'echo $$POSTGRES_DB' < /dev/null); \
+	dbuser=$$(docker compose exec -T db sh -c 'echo $$POSTGRES_USER' < /dev/null); \
+	cname=$$(docker compose ps --format '{{.Name}}' db); \
+	echo "This will DROP and recreate database '$$dbname' in container '$$cname',"; \
+	echo "then load $(FILE) into it. ALL current data in '$$dbname' will be lost."; \
+	printf "Type the database name (%s) to confirm: " "$$dbname"; \
+	read -r confirm; \
+	if [ "$$confirm" != "$$dbname" ]; then \
+		echo "Confirmation did not match — aborting. Nothing was touched." >&2; \
+		exit 1; \
+	fi; \
+	case "$(FILE)" in \
+		*.gz) reader="gzip -dc '$(FILE)'" ;; \
+		*) reader="cat '$(FILE)'" ;; \
+	esac; \
+	echo "Dropping and recreating '$$dbname'..."; \
+	docker compose exec -T db dropdb --if-exists --force -U "$$dbuser" "$$dbname" < /dev/null; \
+	docker compose exec -T db createdb -U "$$dbuser" -O "$$dbuser" "$$dbname" < /dev/null; \
+	echo "Restoring $(FILE)..."; \
+	eval "$$reader" | docker compose exec -T db psql -v ON_ERROR_STOP=1 --single-transaction -U "$$dbuser" -d "$$dbname"; \
+	echo "Restore complete."
 analytics:     ## Start the dev stack + Umami (compose profile: analytics)
 	docker compose --profile analytics up --build
 
