@@ -94,6 +94,7 @@ improvement by hand.
 | `migrations` | Create migrations |
 | `superuser` | Create a Django superuser |
 | `backup` | `pg_dump` the dev database to `backups/<PROJECT_NAME>-<timestamp>.sql.gz` (gitignored) |
+| `analytics` | Start the dev stack + optional Umami analytics (`--profile analytics`) — see below |
 | `lint` | Ruff + ESLint + format checks — the CI gate |
 | `fmt` | Fix everything `lint` checks for — not run by `check` |
 | `typecheck` | mypy + `tsc --noEmit` |
@@ -161,6 +162,24 @@ Five `.env` files, each with a tracked `.example`:
 - `make check` — parity with `.github/workflows/ci.yml`: every CI job/step maps to a target, or is named as a deliberate exclusion in the Makefile's own header comment. Currently excluded: `docker-build` (a minutes-long BuildKit run — `make up`/`make deploy` already exercise the same Dockerfiles) and `security-audit` (a network CVE lookup, advisory-only in CI).
 - Tests always run against real Postgres — never SQLite, including in CI.
 
+## Analytics (optional)
+
+The scaffold can run a self-hosted [Umami](https://umami.is) instance behind a compose
+profile — **off by default**, so a project that doesn't pay for analytics carries no extra
+containers and no script tag. `make up` never starts it, and with
+`NEXT_PUBLIC_UMAMI_WEBSITE_ID` unset the frontend renders no script tag at all.
+
+```bash
+cp .env.example .env    # if you haven't already — this is where the Umami keys live
+make analytics           # docker compose --profile analytics up --build
+```
+
+Open `http://localhost:3001`, log in with the default `admin`/`umami` credentials, **change
+the password immediately**, register a site, and paste the Website ID into
+`NEXT_PUBLIC_UMAMI_WEBSITE_ID`. Full setup, the env keys, the build-time-only rebuild caveat
+for `NEXT_PUBLIC_UMAMI_*`, the nginx block, and the security/privacy notes are all in
+`docs/UMAMI-ANALYTICS.md`.
+
 ## Deployment
 
 ```bash
@@ -172,6 +191,13 @@ Push-based: rsyncs the working tree to the server, then rebuilds/rolls out over 
 health gate before migrations run and an unconditional `pg_dump` backup before them. Full
 protocol in `docs/BASE-DESIGN.md` §9.
 
+Reverse proxy (nginx) is host-level setup this repo doesn't manage, configured once alongside
+`deploy/deploy.prod.env`. Proxy to `127.0.0.1:${BACKEND_PORT}` and `127.0.0.1:${FRONTEND_PORT}`
+per `docs/BASE-DESIGN.md` §9 step 8 — and never proxy `/healthz/` to the public internet (it
+reports live DB/cache reachability with no auth). If [analytics](#analytics-optional) is
+enabled, add a second server block for the dashboard — see `docs/UMAMI-ANALYTICS.md` for the
+block and reasoning.
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
@@ -180,5 +206,6 @@ protocol in `docs/BASE-DESIGN.md` §9.
 | Host's `.venv` shadows the container's | Bind-mounting `./backend:/app` puts the container's venv at `/app/.venv`, which the mount shadows | Already handled — `UV_PROJECT_ENVIRONMENT=/opt/venv` in `backend/Dockerfile` puts the container's venv outside the mount. Don't remove it. |
 | `uv sync --locked` fails | `pyproject.toml` was hand-edited without re-locking | Never hand-edit `backend/uv.lock`. Run `uv lock` (or `uv add`, which does both) and commit the updated lockfile. |
 | `flower`/`mailpit` aren't running | Dev-only tooling sits behind a compose profile | `docker compose --profile tooling up` |
+| `umami`/`umami-db` aren't running | Optional analytics sits behind a compose profile | `docker compose --profile analytics up` (or `make analytics`) |
 | A container is up but unhealthy | Every service has a real healthcheck (§8.2) — "running" isn't "healthy" | `make ps` shows the health column; `make logs` for detail |
 | Rebuild is slow every time | Stale BuildKit cache mounts or a `.dockerignore` gap shipping `.venv`/`node_modules` into the build context | Confirm `backend/.dockerignore`/`frontend/.dockerignore` still exclude them |
