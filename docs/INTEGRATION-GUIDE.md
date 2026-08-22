@@ -86,50 +86,92 @@ When asked to add a new app package, follow this protocol exactly, in order. Mos
    already mounts `--mount=type=ssh` for exactly this, but the mount is optional until the
    workflow actually forwards an agent (`APP-DESIGN.md` §1.2).
 
-3. **Install the frontend half at the same tag:**
+   Every app depends on `appkit` (`APP-DESIGN.md` §1.1), and `uv` resolves that transitively —
+   there's no separate `uv add appkit` step on the backend half. The one thing to check if that
+   resolution fails: `appkit` isn't published to a package index, so the *host's* own
+   `[tool.uv.sources]` has to name where it comes from (`uv` doesn't read a transitive
+   dependency's own `[tool.uv.sources]` block, only the workspace root's):
+   ```toml
+   # host backend/pyproject.toml
+   [tool.uv.sources]
+   appkit = { git = "https://github.com/yourorg/appkit.git", tag = "v1.0.0", subdirectory = "backend" }
+   ```
+   Add this once, the first time any app is installed; bump the `tag` only when deliberately
+   upgrading `appkit` itself (§2.1). If `appkit` is later published to a private index instead,
+   this step drops out entirely — a plain `appkit>=1.0,<2.0` resolves normally.
+
+3. **Install `appkit`'s frontend half, if this is the first app being installed.** Every SDK declares `"appkit": ">=1.0.0 <2.0.0"` as a `peerDependency` (`APP-DESIGN.md` §12) rather than bundling it, for the same reason `react` and `@tanstack/react-query` are peer deps: npm can't dedupe two different `github:org/appkit#vX:frontend` specs into one copy, and two copies means two separate React contexts — `useApiClient` would silently return `null` in half the tree. So the host installs it once, explicitly, at the highest version any installed app's peer range requires:
    ```bash
-   cd ../frontend
+   cd frontend
+   npm install "github:yourorg/appkit#v1.2.0:frontend"
+   ```
+   Already installed and satisfies every app's peer range? Skip this step.
+
+4. **Install the frontend half at the same tag:**
+   ```bash
    npm install "github:yourorg/notifications-app#v1.4.2:frontend"
    ```
    The tags must match. A mismatched pair is the single most likely cause of "the hook returns `undefined` for a field the API clearly sends."
 
-4. **Copy the configuration block from the app's `README.md`** into `backend/config/settings.py` — `INSTALLED_APPS`, `MIDDLEWARE` (if any), its `REST_FRAMEWORK['DEFAULT_THROTTLE_RATES']` entries, and its settings dict (e.g. `NOTIFICATIONS = {...}`). Copy it verbatim; do not write these from memory or infer them from the package's source. Only adapt naming if there's a real collision, and if there is, note it in `CLAUDE.md` (§8) because it becomes a permanent local deviation.
+5. **Copy the configuration block from the app's `README.md`** into `backend/config/settings.py` — `INSTALLED_APPS`, `MIDDLEWARE` (if any), its `REST_FRAMEWORK['DEFAULT_THROTTLE_RATES']` entries, and its settings dict (e.g. `NOTIFICATIONS = {...}`). Copy it verbatim; do not write these from memory or infer them from the package's source. Only adapt naming if there's a real collision, and if there is, note it in `CLAUDE.md` (§8) because it becomes a permanent local deviation.
 
-5. **Add its `.env` keys** to `backend/.env.example` (tracked, with empty values and a comment saying whether each is required) and set real values in `backend/.env`. Required-and-missing keys should fail at startup, not at first use — see `BASE-DESIGN.md` §4.3.
+   The very first app installed into a fresh scaffold also needs `appkit` itself wired in — this
+   is a one-time step, not repeated per app: `REST_FRAMEWORK["EXCEPTION_HANDLER"] =
+   "appkit.exceptions.standard_exception_handler"`, and `"appkit.request_id.RequestIDMiddleware"`
+   added to `MIDDLEWARE` (before anything that logs, after security middleware, same position
+   the scaffold's own `RequestIDMiddleware` used to occupy). Already done? Skip it.
 
-6. **Mount its URLs explicitly** in `backend/config/urls.py` — see §3.
+6. **Add its `.env` keys** to `backend/.env.example` (tracked, with empty values and a comment saying whether each is required) and set real values in `backend/.env`. Required-and-missing keys should fail at startup, not at first use — see `BASE-DESIGN.md` §4.3.
 
-7. **Run migrations:** `docker compose exec backend python manage.py migrate` (or `uv run python manage.py migrate` outside Docker).
+7. **Mount its URLs explicitly** in `backend/config/urls.py` — see §3.
 
-8. **Register any recommended periodic schedule.** If the README includes one, create the `django_celery_beat.models.PeriodicTask` entry — preferably as a data migration in `core/` so it's reproducible and reviewable, rather than clicked into the admin once. This does not happen automatically on install.
+8. **Run migrations:** `docker compose exec backend python manage.py migrate` (or `uv run python manage.py migrate` outside Docker).
 
-9. **Add the app's module to the `banned-api` ruff config** in `backend/pyproject.toml` (`BASE-DESIGN.md` §5.1), so the "only `core/` and `config/` may import app packages" rule is machine-enforced for this app too. One line:
-   ```toml
-   "notifications_app".msg = "Import app packages only from core/ or config/ — INTEGRATION-GUIDE.md §4"
-   ```
+9. **Register any recommended periodic schedule.** If the README includes one, create the `django_celery_beat.models.PeriodicTask` entry — preferably as a data migration in `core/` so it's reproducible and reviewable, rather than clicked into the admin once. This does not happen automatically on install.
 
-10. **Mount its provider** in `frontend/app/providers.tsx`, passing the host's own client and, if the app's README suggests a non-default mount path, its `basePath` prop — the SDK-to-host client contract (`APP-DESIGN.md` §12):
+10. **Add the app's module to the `banned-api` ruff config** in `backend/pyproject.toml` (`BASE-DESIGN.md` §5.1), so the "only `core/` and `config/` may import app packages" rule is machine-enforced for this app too. One line:
+    ```toml
+    "notifications_app".msg = "Import app packages only from core/ or config/ — INTEGRATION-GUIDE.md §4"
+    ```
+    `appkit` never gets a `banned-api` line — it's a declared dependency every app is expected to import (`APP-DESIGN.md` §1.1), not a sibling app the rule exists to keep out.
+
+11. **Mount `appkit`'s shared provider**, if it isn't mounted yet, in `frontend/app/providers.tsx` — once for the whole host, not once per app — and add this app's namespace to its `basePaths` map (the SDK-to-host client contract, `APP-DESIGN.md` §12):
     ```tsx
     // frontend/app/providers.tsx
-    import { NotificationsProvider } from "notifications-app";
+    import { ApiClientProvider } from "appkit";
     import { apiClient } from "@/lib/api-client";
 
     // ... inside the existing Providers component, nested under QueryClientProvider:
-    <NotificationsProvider client={apiClient}>{children}</NotificationsProvider>
+    <ApiClientProvider
+      client={apiClient}
+      basePaths={{
+        // ... entries for already-installed apps stay here
+        notifications: "/api/v1/notifications",   // this app's README-suggested prefix
+      }}
+    >
+      {children}
+    </ApiClientProvider>
     ```
-    Skip this step and every hook from the app throws immediately — the config hook a hook calls internally is written to fail loudly rather than silently pass `undefined` through to a `fetch` call.
+    Installing a second, third, or fourth app adds a `basePaths` entry to this same provider — it
+    does **not** nest a new provider. Get the key wrong (a typo, or reusing another app's
+    namespace) and the app's hooks silently fall back to its own default prefix instead of
+    failing to build; the key to use is whatever the app's own README documents.
 
-11. **Import its hooks where needed**, from the package's single entrypoint (`import { useNotifications } from "notifications-app"`) — never reach past that into an internal path like `notifications-app/dist/api/manager`.
+    Skip this step entirely (no provider mounted at all) and every hook from the app throws
+    immediately — `useApiClient` is written to fail loudly rather than silently pass `undefined`
+    through to a `fetch` call.
 
-12. **Rebuild, don't just restart.** Installing or upgrading changes `uv.lock`/`package-lock.json`, which changes what's baked into the Docker image:
+12. **Import its hooks where needed**, from the package's single entrypoint (`import { useNotifications } from "notifications-app"`) — never reach past that into an internal path like `notifications-app/dist/api/manager`.
+
+13. **Rebuild, don't just restart.** Installing or upgrading changes `uv.lock`/`package-lock.json`, which changes what's baked into the Docker image:
     ```bash
     docker compose up --build
     ```
     In production this is what `deploy-prod.sh`'s `build --pull` step exists for. **A restart without a rebuild is the single most common reason "I installed the package but it's not there."**
 
-13. **Update `CLAUDE.md`'s installed-apps list** — §8. This is part of the task, not an optional courtesy.
+14. **Update `CLAUDE.md`'s installed-apps list** — §8. This is part of the task, not an optional courtesy.
 
-14. **Verify before declaring done:** `make check` passes, `/api/schema/swagger-ui/` shows the new endpoints under their expected tags, and the app's own smoke path works (one request to a public endpoint, one to an admin endpoint expecting 403 as a non-admin).
+15. **Verify before declaring done:** `make check` passes, `/api/schema/swagger-ui/` shows the new endpoints under their expected tags, and the app's own smoke path works (one request to a public endpoint, one to an admin endpoint expecting 403 as a non-admin).
 
 Skipping steps or reordering them produces confusing failures — running `migrate` before `INSTALLED_APPS` is updated, mounting URLs for a throttle scope that was never registered, or a frontend hook 404ing because its backend counterpart was never installed.
 
@@ -140,7 +182,7 @@ cd backend  && uv add "git+https://github.com/yourorg/notifications-app.git@v1.5
 cd ../frontend && npm install "github:yourorg/notifications-app#v1.5.0:frontend"
 ```
 
-Then, in order: read the app's `CHANGELOG.md` for the range you're crossing and act on **every "Host action:" line**; re-copy any changed README config blocks; check whether any signal payload or service signature changed (a major bump means at least one did, and your `core/` receivers may need updating); `migrate`; `docker compose up --build`; run `make check`; update the version in `CLAUDE.md`.
+Then, in order: read the app's `CHANGELOG.md` for the range you're crossing and act on **every "Host action:" line**; **check whether the new version raised its `appkit` peer/dependency range** (`APP-DESIGN.md` §1.1, §12) — if it did, upgrade `appkit` itself first, on both halves, before re-running `uv sync`/`npm install` for this app; re-copy any changed README config blocks; check whether any signal payload or service signature changed (a major bump means at least one did, and your `core/` receivers may need updating); `migrate`; `docker compose up --build`; run `make check`; update the version in `CLAUDE.md`.
 
 `make check`'s `tsc --noEmit` is what actually catches a shape change the host's own code depends on — the app's `dist/index.d.ts` ships generated from its own schema (`APP-DESIGN.md` §12), so any type the host consumes that the new version changed fails to compile, same as any other breaking TS change. There's no separate host-side schema snapshot in this scaffold's own CI (`BASE-DESIGN.md` §7) — deliberately: it would only add a second gate for changes the host doesn't consume, which by definition aren't breaking it, at the cost of an artifact that churns on every unrelated endpoint change across every installed app and stops being read. If you want to see everything an upgrade changed, not just what broke the build, `diff` the running `/api/schema/` before and after — optional, human-run, not part of `make check`.
 
@@ -155,7 +197,9 @@ cd backend && uv remove notifications-app
 cd ../frontend && npm uninstall notifications-app
 ```
 
-Before removing the package: `python manage.py migrate notifications_app zero` to unwind its tables (irreversible — back up first). Then delete its `INSTALLED_APPS` entry, settings dict, throttle scopes, `.env` keys, URL mounts, `banned-api` line, any `core/signals.py` receivers or `core/services/` calls referencing it, any frontend imports (including its provider mount in `frontend/app/providers.tsx` — §2 step 10), and its entry in `CLAUDE.md`. Grep for both the module name (`notifications_app`) and the package name (`notifications-app`) to catch leftovers.
+Before removing the package: `python manage.py migrate notifications_app zero` to unwind its tables (irreversible — back up first). Then delete its `INSTALLED_APPS` entry, settings dict, throttle scopes, `.env` keys, URL mounts, `banned-api` line, any `core/signals.py` receivers or `core/services/` calls referencing it, any frontend imports, its entry in `CLAUDE.md`, and **its `basePaths` entry** in `frontend/app/providers.tsx` (§2 step 11) — not the `ApiClientProvider` mount itself, which every remaining app still needs. Grep for both the module name (`notifications_app`) and the package name (`notifications-app`) to catch leftovers.
+
+Don't `npm uninstall appkit` or remove `appkit`'s backend dependency as part of removing a single app — it's a shared dependency every remaining installed app still relies on. Only remove it if this was the last app installed in the project.
 
 ## 3. URL Routing Architecture
 
@@ -260,9 +304,9 @@ Same rule, mirrored: an installed SDK's hooks never import another installed SDK
 
 ```tsx
 // frontend/app/checkout/page.tsx
-// Assumes CartProvider and PaymentsProvider are already mounted in
-// frontend/app/providers.tsx (§2 step 10) — this page only consumes their hooks,
-// it never mounts a provider itself.
+// Assumes appkit's ApiClientProvider is already mounted in frontend/app/providers.tsx
+// with "cart" and "payments" entries in its basePaths map (§2 step 11) — this page only
+// consumes each SDK's hooks, it never mounts a provider itself.
 "use client";
 
 import { useCart, cartKeys } from "cart-app";
@@ -339,13 +383,16 @@ This is a normal `pytest` suite (`make test`). CI runs it (`BASE-DESIGN.md` §7)
 
 ## 6. Shared Utilities & Cross-Cutting Concerns
 
-`backend/tools/` is project-owned and exists for **`config/` and `core/` code** — not for installed app packages, which can't assume a specific host's internals exist (see `APP-DESIGN.md` §4 for why apps bundle their own equivalents). The same boundary exists on the frontend: `frontend/lib/query-client.ts` is the one thing an installed SDK is allowed to assume exists (a peer-dependency contract, `APP-DESIGN.md` §12) — anything else in `frontend/lib/` is for the host's own pages and components.
+`backend/tools/` is project-owned and exists for **`config/` and `core/` code** — not for installed app packages, which can't assume a specific host's internals exist. What used to live here and be duplicated by every app (`APP-DESIGN.md` §4) now has a real home: `appkit`, a declared, versioned dependency every app depends on explicitly (`APP-DESIGN.md` §1.1). `frontend/lib/query-client.ts` and `appkit`'s `ApiClientProvider` are the two things an installed SDK is allowed to assume exist (`APP-DESIGN.md` §12) — one a host convention, one a declared peer dependency — anything else in `frontend/lib/` is for the host's own pages and components.
 
-- `tools/cache.py` — caching helpers for project-level views (e.g. in `core/views/`).
-- `tools/mixins.py` — standardized DRF mixins and error formats for the same project-level code.
 - `tools/crypto.py` — wraps the project's `FERNET_KEY` for field-level encryption in project-owned models: `from tools.crypto import encrypt, decrypt`. If an *app* needs encryption internally, that's the app's own concern with its own documented `.env` key — never the host's `tools.crypto`.
+- `appkit.cache` / `appkit.mixins` — the caching helpers and `CachedListMixin`, shared with every installed app rather than duplicated per app or reimplemented in `tools/`.
+- `appkit.exceptions` — the error-envelope handler, wired as `REST_FRAMEWORK["EXCEPTION_HANDLER"]`.
+- `appkit.request_id` — the request-ID `ContextVar`, middleware, and logging filter; `config/logging.py`'s `build_logging_config()` imports the filter from here.
 
-**If something in `tools/` would be useful in the next project too, that's a signal.** The honest options are: copy it by hand into the next scaffold clone (fine for a 20-line helper), or promote it into a small shared toolkit package that both the host and app packages can depend on explicitly. What's *not* fine is an app package importing `tools.*` — that silently couples a supposedly-standalone package to one host's layout, and it will fail in the next project that installs it.
+`BASE-DESIGN.md` §3's "The `tools/` vs `appkit` boundary" has the test for which new host code belongs where: **does an app package need it to behave correctly in any host?** If yes, it's an `appkit` candidate, not a `tools/` addition.
+
+**If something genuinely project-specific in `tools/` (i.e. not a candidate for `appkit`) would be useful in the next project too, that's a signal** — copy it by hand into the next scaffold clone (fine for a 20-line helper), since it depends on this project's own configuration and isn't something a shared dependency can express. What's *not* fine, on either side of this boundary, is an app package importing `tools.*` directly — that silently couples a supposedly-standalone package to one host's layout, and it will fail in the next project that installs it. `appkit` exists specifically so that instinct has a legitimate outlet instead.
 
 ## 7. Dependency Resolution & Troubleshooting
 
@@ -364,6 +411,8 @@ All installed apps share **one** environment (`APP-DESIGN.md` §1.1). Two apps w
 1. **Fix the app.** Whichever app pinned exactly is the one violating the standard — change it to a range, release a patch version, re-pin. This is the correct fix and it's usually a two-line diff.
 2. **`uv tree`** to see who actually requires what, and `uv add --upgrade-package <name>` if one side just needs a nudge within its range.
 3. **A last-resort `[tool.uv] override-dependencies`** in the host, forcing one version. This says "I know better than the app's declared constraint" — legitimate occasionally, dangerous always. If you do it, comment *why* and open an issue on the app repo, because it's a landmine for the next person.
+
+`appkit` is the most likely subject of this conflict once an ecosystem has more than a couple of apps — it's the one dependency every app shares (`APP-DESIGN.md` §1.1). Two apps pinning different `appkit` majors is the same unresolvable shape as the `djangorestframework` example above, and the fix is the same: whichever app pinned too tightly needs a range, not the host working around it.
 
 ### The app installed but Django can't find it
 
@@ -385,7 +434,7 @@ The app's build didn't ship its package data (`APP-DESIGN.md` §2). That's a bug
 
 ### The frontend hook 404s or returns the wrong shape
 
-Almost always a version mismatch between halves (§2 step 3) or a missing URL mount (§3). Confirm the pinned tags match in `package.json` and `pyproject.toml`, then hit the endpoint directly with `curl` — if `curl` works and the hook doesn't, the base URL in `frontend/lib/api-client.ts` is the next suspect.
+Almost always a version mismatch between halves (§2 step 4) or a missing URL mount (§3). Confirm the pinned tags match in `package.json` and `pyproject.toml`, then hit the endpoint directly with `curl` — if `curl` works and the hook doesn't, check the `basePaths` key in `frontend/app/providers.tsx` (§2 step 11) before the base URL in `frontend/lib/api-client.ts` — a wrong or missing key falls back to the app's own default prefix silently.
 
 ### After any of these
 
@@ -417,13 +466,13 @@ Before considering any integration task complete, verify every one of these — 
 - [ ] Every new `.env` key is in `.env.example` too, marked required or optional.
 - [ ] Every view (app or override) has a `throttle_scope`, and that scope exists in `DEFAULT_THROTTLE_RATES`.
 - [ ] Both halves of every app are installed **at the same tag**.
-- [ ] The newly installed app has a `banned-api` line in `backend/pyproject.toml` (§2 step 9).
+- [ ] The newly installed app has a `banned-api` line in `backend/pyproject.toml` (§2 step 10) — except `appkit`, which never gets one (`APP-DESIGN.md` §1.1).
 
 **Boundaries**
-- [ ] Zero imports between two app packages anywhere outside `backend/core/` — `uv run ruff check .` proves this now that §2 step 9 is done; don't rely on grep alone.
-- [ ] Zero imports between two installed frontend SDKs; cross-app UI composition lives only in `frontend/app/`.
+- [ ] Zero imports between two app packages anywhere outside `backend/core/` — `uv run ruff check .` proves this now that §2 step 10 is done; don't rely on grep alone. `appkit` is a declared dependency, not a sibling app, so every app importing it is expected and not a violation.
+- [ ] Zero imports between two installed frontend SDKs; cross-app UI composition lives only in `frontend/app/`. Same `appkit` carve-out as above — every SDK importing `appkit` is the declared-peer-dependency case, not the banned inter-SDK case.
 - [ ] Every installed frontend hook is imported from its package root, not a deeper internal path.
-- [ ] No app package imports `tools.*` or anything else host-specific.
+- [ ] No app package imports `tools.*` or anything else host-specific. `appkit` is explicitly not `tools.*` — it's the shared dependency `tools.*` helpers moved into, precisely so an app *can* import it (`BASE-DESIGN.md` §3).
 - [ ] No `factories` import in production code — test files only.
 - [ ] **No file under `.venv`/`site-packages` or `frontend/node_modules` was edited.**
 
