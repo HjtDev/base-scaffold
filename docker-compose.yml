@@ -159,6 +159,59 @@ services:
       - "${MAILPIT_HTTP_PORT:-8025}:8025"   # web UI
       - "${MAILPIT_SMTP_PORT:-1025}:1025"   # SMTP
 
+  # ----------------------------------------------------------------- analytics profile
+  # Optional self-hosted Umami analytics — off by default so a project that doesn't pay
+  # for it carries no extra containers. `docker compose --profile analytics up` (or
+  # `make analytics`) brings these up; plain `docker compose up` never touches them.
+  umami-db:
+    # Deliberately a SEPARATE Postgres instance from `db`, not a second database on the
+    # same server — Umami owns and migrates its own schema on boot, and sharing an
+    # instance would couple the app's migration state to a third-party container's.
+    image: postgres:17-alpine
+    container_name: ${PROJECT_NAME}_umami_db
+    profiles: ["analytics"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: umami
+      POSTGRES_USER: umami
+      POSTGRES_PASSWORD: ${UMAMI_DB_PASSWORD:-umami_dev_password}
+    volumes: ["umamidata:/var/lib/postgresql/data"]
+    # No `ports:` — nothing on the host needs to reach Umami's database directly.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U umami -d umami"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  umami:
+    # ghcr.io, not Docker Hub, and a pinned release tag, not `postgresql-latest` — Umami
+    # v3 dropped MySQL support, so the `postgresql-` tag prefix is a v2 leftover with no
+    # pinned version variants; the moving `latest`-style tag would also defeat
+    # renovate.json's pinDigests. See docs/UMAMI-ANALYTICS.md.
+    image: ghcr.io/umami-software/umami:3.3.1
+    container_name: ${PROJECT_NAME}_umami
+    profiles: ["analytics"]
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://umami:${UMAMI_DB_PASSWORD:-umami_dev_password}@umami-db:5432/umami
+      APP_SECRET: ${UMAMI_APP_SECRET:-change-me-umami-dev-secret}
+      # New in Umami v3.3, required before any user can enable 2FA. The default admin
+      # password (admin/umami) can't be set via env — see the root .env.example comment
+      # — so shipping this is what makes 2FA an available mitigation at all.
+      TWO_FACTOR_ENCRYPTION_KEY: ${UMAMI_TWO_FACTOR_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
+    ports: ["${UMAMI_PORT:-3001}:3000"]
+    healthcheck:
+      # 127.0.0.1, not localhost — same reasoning as every other healthcheck in this file.
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/api/heartbeat"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      umami-db: { condition: service_healthy }
+
 volumes:
   pgdata:
   redisdata:
+  umamidata:
