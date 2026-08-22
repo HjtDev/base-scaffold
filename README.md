@@ -94,6 +94,7 @@ improvement by hand.
 | `migrations` | Create migrations |
 | `superuser` | Create a Django superuser |
 | `backup` | `pg_dump` the dev database to `backups/<PROJECT_NAME>-<timestamp>.sql.gz` (gitignored) |
+| `restore` | `make restore FILE=<path>` — drop and reload the dev database from a backup, confirms first |
 | `analytics` | Start the dev stack + optional Umami analytics (`--profile analytics`) — see below |
 | `lint` | Ruff + ESLint + format checks — the CI gate |
 | `fmt` | Fix everything `lint` checks for — not run by `check` |
