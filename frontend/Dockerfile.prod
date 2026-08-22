@@ -15,6 +15,14 @@ ARG NEXT_PUBLIC_API_URL
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 # NEXT_PUBLIC_* is inlined into the client bundle at BUILD time — it must be a build ARG,
 # not a runtime env var. Changing it means rebuilding the image, not restarting it.
+# Optional analytics — see docker-compose.prod.yml and .env.prod.example. Empty ARG
+# defaults keep this image buildable for a project that never enables analytics; the
+# same build-time-only rule applies (enabling it later means `up -d --build frontend`,
+# never just a restart).
+ARG NEXT_PUBLIC_UMAMI_SCRIPT_URL=
+ARG NEXT_PUBLIC_UMAMI_WEBSITE_ID=
+ENV NEXT_PUBLIC_UMAMI_SCRIPT_URL=$NEXT_PUBLIC_UMAMI_SCRIPT_URL
+ENV NEXT_PUBLIC_UMAMI_WEBSITE_ID=$NEXT_PUBLIC_UMAMI_WEBSITE_ID
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
