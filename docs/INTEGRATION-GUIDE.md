@@ -142,6 +142,8 @@ cd ../frontend && npm install "github:yourorg/notifications-app#v1.5.0:frontend"
 
 Then, in order: read the app's `CHANGELOG.md` for the range you're crossing and act on **every "Host action:" line**; re-copy any changed README config blocks; check whether any signal payload or service signature changed (a major bump means at least one did, and your `core/` receivers may need updating); `migrate`; `docker compose up --build`; run `make check`; update the version in `CLAUDE.md`.
 
+`make check`'s `tsc --noEmit` is what actually catches a shape change the host's own code depends on — the app's `dist/index.d.ts` ships generated from its own schema (`APP-DESIGN.md` §12), so any type the host consumes that the new version changed fails to compile, same as any other breaking TS change. There's no separate host-side schema snapshot in this scaffold's own CI (`BASE-DESIGN.md` §7) — deliberately: it would only add a second gate for changes the host doesn't consume, which by definition aren't breaking it, at the cost of an artifact that churns on every unrelated endpoint change across every installed app and stops being read. If you want to see everything an upgrade changed, not just what broke the build, `diff` the running `/api/schema/` before and after — optional, human-run, not part of `make check`.
+
 **Never upgrade across a major bump without reading the changelog.** The whole point of the version-pinning discipline in this architecture is that upgrades are deliberate; a blind `--upgrade` throws that away.
 
 ### 2.2 Removing an app

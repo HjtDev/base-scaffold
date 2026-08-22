@@ -639,6 +639,10 @@ INSTALLED_APPS = [
     "notifications_app",
 ]
 
+# Schema generation (§12, "Generated types") walks the URLconf, so this module needs one —
+# it isn't only a test-runner requirement.
+ROOT_URLCONF = "tests.backend.urls"
+
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
@@ -658,10 +662,30 @@ REST_FRAMEWORK = {
     },
 }
 
+# COMPONENT_SPLIT_REQUEST is required, not optional — see §12, "Generated types", for why.
+SPECTACULAR_SETTINGS = {
+    "TITLE": "notifications-app",
+    "VERSION": "0.0.0",  # irrelevant here — the app's real version lives in pyproject.toml
+    "COMPONENT_SPLIT_REQUEST": True,
+}
+
 NOTIFICATIONS = {"DEFAULT_CHANNEL": "email"}
 ```
 
-Keeping this minimal is deliberate: if your tests only pass with fifteen extra apps installed, the package has an undeclared dependency on a host's configuration, and a real host will hit that.
+```python
+# tests/backend/urls.py — exists so the app's schema can be generated standalone, without a
+# host. Mounts the same URLconfs a host's own backend/config/urls.py would mount per the
+# app's README (§8) — nothing host-specific, since this file ships in the test tree, not a
+# real host's tree.
+from django.urls import include, path
+
+urlpatterns = [
+    path("api/v1/notifications/", include("notifications_app.urls")),
+    path("api/v1/notifications/admin/", include("notifications_app.urls_admin")),
+]
+```
+
+Keeping `tests/backend/settings.py` minimal is deliberate: if your tests only pass with fifteen extra apps installed, the package has an undeclared dependency on a host's configuration, and a real host will hit that.
 
 ### 7.2 `conftest.py` hierarchy
 
@@ -1033,6 +1057,17 @@ jobs:
         working-directory: backend
         env:
           DJANGO_SETTINGS_MODULE: tests.backend.settings
+      # Same pattern as the migrations check above, one line up: the committed artifact must
+      # match what the code generates. Catches "serializer changed, schema.yml wasn't
+      # regenerated" — see §12, "Generated types". No DB, no frontend toolchain needed here.
+      - name: Committed schema.yml must match a fresh generation
+        run: |
+          uv run python manage.py spectacular --file /tmp/schema.yml --fail-on-warn
+          diff -u schema.yml /tmp/schema.yml \
+            || { echo "::error::schema.yml is stale — run 'manage.py spectacular --file schema.yml' and commit it. See APP-DESIGN.md §12."; exit 1; }
+        working-directory: backend
+        env:
+          DJANGO_SETTINGS_MODULE: tests.backend.settings
       - name: pytest
         run: uv run pytest -n auto --cov-fail-under=${{ inputs.coverage-threshold }}
         working-directory: backend
@@ -1124,6 +1159,16 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
         working-directory: frontend
+      # Same "committed artifact must match a fresh generation" pattern as backend-tests'
+      # schema.yml check above — this half needs only Node, so it lives here rather than
+      # growing a Python dependency into the frontend job. Catches "schema.yml changed,
+      # schema.d.ts wasn't regenerated" — see §12, "Generated types".
+      - name: Committed schema.d.ts must match a fresh generation
+        run: |
+          npm run generate:types
+          git diff --exit-code src/schema.d.ts \
+            || { echo "::error::schema.d.ts is stale — run 'npm run generate:types' and commit it. See APP-DESIGN.md §12."; exit 1; }
+        working-directory: frontend
       - run: npx tsc --noEmit
         working-directory: frontend
       - run: npm run lint
@@ -1211,7 +1256,7 @@ jobs:
 
 ### 10.3 Branch protection & automation
 
-- Require `backend-quality`, `backend-tests`, `frontend`, `version-lockstep`, and `no-inter-app-imports` to pass before merge to `main`. The rest (`resolution-matrix`, `security-audit`) can be advisory at first and promoted once they're stable.
+- Require `backend-quality`, `backend-tests`, `frontend`, `version-lockstep`, and `no-inter-app-imports` to pass before merge to `main`. The rest (`resolution-matrix`, `security-audit`) can be advisory at first and promoted once they're stable. The two generated-types diff checks (§12) are steps inside `backend-tests` and `frontend` respectively, not separate jobs — requiring those two jobs already requires them.
 - **Renovate** (preferred over Dependabot here, because it handles the `git+...@vX.Y.Z` tag pattern and `uv.lock` better) opens PRs for: `uv.lock` updates within declared ranges, `package-lock.json`, the pinned Docker base image digests in `playground/`, and pre-commit hook `rev`s. Group patch updates into one weekly PR; keep majors separate so they get read.
 - **Conventional Commits** (`feat:`, `fix:`, `feat!:`) make the semver decision in §11 mechanical instead of a judgement call, and let `git-cliff` generate the `CHANGELOG.md` section from history. Enforce with a `commitlint` job or a `commit-msg` pre-commit hook.
 
@@ -1222,7 +1267,7 @@ jobs:
 1. **Green CI on `main`.** Not "tests passed locally" — the full workflow from §10, including `resolution-matrix` and `wheel-smoke-test`. These two are the ones that catch the failures a host would otherwise discover for you.
 2. **Playground verification** (§11.2) — prove the two halves work together against a real host before tagging.
 3. **Decide the bump** from the Conventional Commit history: any `!`/`BREAKING CHANGE` → major; any `feat:` → minor; otherwise patch. Remember from §6 that a changed signal payload, a changed `services.py` signature, or a renamed factory is a **major**, even if the diff looks tiny.
-4. **Bump the version in three places together:** `backend/pyproject.toml`, `frontend/package.json`, and a new `CHANGELOG.md` section. CI's `version-lockstep` job fails the build if they disagree, so this cannot be forgotten silently.
+4. **Bump the version in three places together:** `backend/pyproject.toml`, `frontend/package.json`, and a new `CHANGELOG.md` section. CI's `version-lockstep` job fails the build if they disagree, so this cannot be forgotten silently. Generated types (§12) make this rule enforceable rather than aspirational: a serializer change now mechanically produces a `schema.yml` diff and, from that, a `schema.d.ts` diff — and `backend-tests`/`frontend` (§10.1) refuse to pass until both are committed. There is no longer a way to ship a backend shape change in a commit whose frontend types weren't regenerated alongside it, which is exactly the class of "tiny diff, actually a major" mistake step 3 above warns about.
 5. **Update `README.md`'s config block** (§8) if settings, `.env` keys, throttle scopes, URLs, signal payloads, service signatures, factories, or exported hooks changed.
 6. **Commit, tag `vX.Y.Z`** (one tag covers both halves), push the tag. The tag push re-runs CI with the tag-match assertion active.
 7. **In a consuming project**, follow `INTEGRATION-GUIDE.md` §2's upgrade path.
@@ -1277,7 +1322,7 @@ The `frontend/` half of a package is a small SDK — typed hooks and a fetcher, 
 - **One entrypoint.** Everything a host can use is exported from `frontend/src/index.ts`. Nothing under `hooks/`, `api/`, or `types.ts` is imported directly by a host — only through `index.ts`. This keeps the internal file layout free to change without it being a breaking change.
 - **Peer dependencies, not bundled ones.** `react`, `@tanstack/react-query` (or `axios`, whichever the app actually uses) are declared as `peerDependencies`, never as regular `dependencies`. Bundling them would mean a host ends up with two copies of React or two separate `QueryClient` instances — a well-known source of hard-to-debug bugs. The host's own copy, already provided via the scaffold's `frontend/lib/query-client.ts` (see `BASE-DESIGN.md` §3), is what every hook plugs into.
 - **No inter-app frontend dependencies.** Exactly like the backend half (§6), a package's `frontend/` must never depend on or import another reusable app's frontend package. If two apps' UIs need to be combined, that composition happens in the host's own `frontend/` code — see `INTEGRATION-GUIDE.md` §4.
-- **Typed end to end, strictly.** `tsconfig.json` sets `"strict": true`; `types.ts` exports the request/response shapes the hooks use, so a host gets full type safety with no separate `@types` package and no `any`.
+- **Typed end to end, strictly.** `tsconfig.json` sets `"strict": true`; `types.ts` exports the request/response shapes the hooks use, so a host gets full type safety with no separate `@types` package and no `any`. Those shapes are **generated** from the app's own OpenAPI schema, not hand-written — see "Generated types" below.
 - **The concrete HTTP client is injected, never imported.** An app's `frontend/` can't `import` the host's `frontend/lib/api-client.ts` — that file lives in the host project, not in the publishable package, and the SDK has to build and ship standalone (§1). See "SDK-to-host client contract" below for the mechanism.
 
 ```json
@@ -1294,7 +1339,11 @@ The `frontend/` half of a package is a small SDK — typed hooks and a fetcher, 
     "react": ">=18",
     "@tanstack/react-query": ">=5"
   },
+  "devDependencies": {
+    "openapi-typescript": "^7.13.0"
+  },
   "scripts": {
+    "generate:types": "openapi-typescript ../backend/schema.yml -o src/schema.d.ts",
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest",
     "lint": "eslint src"
@@ -1303,6 +1352,51 @@ The `frontend/` half of a package is a small SDK — typed hooks and a fetcher, 
 ```
 
 The `exports` map matters: it's what stops a host from importing `notifications-app/dist/api/manager` and coupling itself to internals, which the "one entrypoint" rule exists to prevent. Declaring only `"."` makes the rule enforced by Node's resolver rather than by convention.
+
+### Generated types
+
+`types.ts` matching the backend's serializers exactly (the rule stated above) used to depend on a human keeping two files in sync by hand — the only thing that ever caught drift was clicking through the playground (§11.2, `CLAUDE-CODE-GUIDE-APP.md` Phase 6). Since every view already carries a complete `@extend_schema` (§4), `drf-spectacular` already has everything it needs to emit that shape mechanically. Doing so converts "hook returns `undefined` for a field the API sends" (`CLAUDE-CODE-GUIDE-APP.md` §5) from a bug a human usually catches into a diff CI refuses to let through (§10.1).
+
+**The generator is `openapi-typescript` (currently 7.13.0), types only — deliberately not a client generator.** `openapi-fetch` and `orval` both generate a runtime HTTP client (`orval` goes further and generates the react-query hooks themselves); either would replace exactly the hand-written manager-and-hooks layer this section exists to specify, and `orval`'s generated hooks are a different shape than "Manager & hook conventions" below mandates. `openapi-typescript-codegen` is unmaintained in favor of `@hey-api/openapi-ts`, and both are full client generators too — same problem. `openapi-typescript` emits runtime-free `.d.ts` output and nothing else, which is the one degree of automation this architecture actually wants.
+
+**The file split — this is the load-bearing decision:**
+
+- **`src/schema.d.ts` — generated, never hand-edited.** Carries a header comment saying so (openapi-typescript writes one automatically: *"This file was auto-generated... Do not make direct changes to the file."*). Every type lives under `components["schemas"][...]` and `operations[...]` — indexed-access types, not top-level names, because that's what a spec with many operations needs to stay collision-free.
+- **`src/types.ts` — hand-written, and stays the SDK's public type surface.** Re-exports narrowed, ergonomic aliases from `schema.d.ts` (`export type Notification = components["schemas"]["Notification"];`), plus everything the schema cannot express — see "What stays hand-written" below. `index.ts`'s "one entrypoint" rule and every existing example in this section are unaffected: hooks and the manager still import from `../types`, never from `../schema.d.ts` directly.
+
+Regeneration has to be safe to run at any time with no review of its own output — that's only true if it writes to a file nobody hand-edits. That's the entire reason for the split.
+
+**The exact command:** `npm run generate:types`, defined in `frontend/package.json` above as `openapi-typescript ../backend/schema.yml -o src/schema.d.ts`. `openapi-typescript` is a `devDependency`, never a `dependency` or `peerDependency` — it's build-time tooling that generates a committed file; a host installing the package must never need it.
+
+**Committed, not generated at install time.** Both `backend/schema.yml` and `frontend/src/schema.d.ts` are committed to the repo. A host installs the published package and gets `dist/index.d.ts`, already built from these committed sources — no Python, no `uv`, no Django, no `openapi-typescript`, nothing beyond what `npm install` already pulls. Generating at install time (a `postinstall` hook, say) would put the entire backend toolchain in every host's install path, which is a hard violation of §1's "builds and ships standalone" rule — a host has no `backend/schema.yml` to generate from in the first place, since the app's backend source isn't part of what it installed.
+
+**Where the schema comes from: `manage.py spectacular` against `tests/backend/settings.py` (§7.1), not the playground (§11.2).** Three reasons, in ascending order of importance:
+
+1. It's the same settings module §10.1's `makemigrations --check --dry-run` step already runs under — the CI job below (§10.1) is the same pattern in the same place, not a new mechanism to maintain.
+2. Schema generation walks the URLconf and serializer declarations; it never queries the database. It runs in a bare `uv sync`'d checkout in seconds, needing no Postgres, no Redis, no Docker — the playground needs a full `docker compose up`.
+3. **The decisive reason:** the playground is a *host*, and a host's schema carries that host's own mount prefix. §12's "SDK-to-host client contract" injects `basePath` at runtime specifically because the mount point is the host's choice, not the app's (`DEFAULT_BASE_PATH` above is a suggestion, not a guarantee). Generating from the playground would bake one arbitrary host's prefix into the shipped types — generating from `tests/backend/settings.py`, whose URLconf exists solely to make the app's own schema generatable standalone, keeps the types mount-agnostic, matching how the manager itself is written.
+
+```bash
+# backend/ — regenerate the committed schema
+DJANGO_SETTINGS_MODULE=tests.backend.settings uv run python manage.py spectacular \
+  --file schema.yml --fail-on-warn
+
+# frontend/ — regenerate the committed types from that schema
+npm run generate:types
+```
+
+`--fail-on-warn` matters on its own: drf-spectacular warns when it can't cleanly resolve something (an enum name collision, a missing `@extend_schema`), and a schema generated with warnings produces types that are wrong in exactly the way this whole mechanism exists to prevent. A warning-clean run is the bar, not merely a file being produced.
+
+**`COMPONENT_SPLIT_REQUEST = True` is required**, set in `tests/backend/settings.py`'s `SPECTACULAR_SETTINGS` (§7.1) — this is what makes readOnly/writeOnly fields translate correctly. Without it, a single `Notification` component would need every write-only field marked optional-and-ignorable and every read-only field marked as if the client could send it back; a POST body typed from that component would happily let a caller set `id`. With it on, `drf-spectacular` emits two components — `Notification` (response) and `NotificationRequest` (request) — and `openapi-typescript` renders the read-only field as TypeScript's own `readonly` modifier on the response type, entirely absent from the request type; a write-only field appears only on the request type, entirely absent from the response type. No wrapper types, no runtime cost — verified directly: a `ChoiceField`, an `allow_null` field, a `read_only` `id`, a `write_only` field, a nested serializer, and a paginated list view all round-tripped through `manage.py spectacular --fail-on-warn` (zero warnings) and `openapi-typescript` cleanly, producing exactly the shapes described here.
+
+openapi-typescript's own `--read-write-markers` flag was considered and **rejected**: it wraps properties as `id?: $Read<number>` and requires consumers to apply `Readable<T>`/`Writable<T>` helper types to unwrap them. Those marker types would leak into the published SDK's `dist/index.d.ts` and become part of the host-facing API surface — exactly the kind of internal-mechanism leakage §1's decoupling discipline exists to prevent elsewhere in this package. `COMPONENT_SPLIT_REQUEST` solves the same problem at the schema level and produces plain, named types instead.
+
+**Enum stability.** `drf-spectacular` names each `choices` field's value set into its own component (`StatusEnum`, following `ENUM_SUFFIX`'s default) and renders a JSDoc comment listing each choice's label — verified above: a three-value `ChoiceField` produced `type StatusEnum = "active" | "inactive" | "archived";` with the human-readable labels preserved as a comment. Two fields sharing the same choice values under different names, or the same field name with different choice sets across serializers, make the naming unstable (`drf-spectacular` appends disambiguating suffixes and warns). An unstable component name is an unstable *type* name in `schema.d.ts`, which would make `schema.d.ts` churn on every regeneration for no functional reason — noisy enough that a team stops trusting the CI diff gate below. Set `ENUM_NAME_OVERRIDES` in `SPECTACULAR_SETTINGS` the moment `--fail-on-warn` flags a collision; don't wait for it to become a habit of ignoring warnings.
+
+**What stays hand-written**, in `types.ts`, because nothing in an OpenAPI schema can express it:
+
+- **`HttpClient`** — describes the shape of the *host's* client, not a response the API sends. See "SDK-to-host client contract" below.
+- **The error envelope** (`{"error": {"code", "message", "details", "request_id"}}`) — produced by the bundled exception handler (§4) at request-handling time, not declared on any serializer, so `drf-spectacular` has no field to introspect. If a view's error responses need documenting for Swagger's sake, that's a job for `@extend_schema(responses=...)` on the view — but the shape still has to be typed by hand in `types.ts`, since it doesn't originate from a serializer either way.
 
 ### SDK-to-host client contract
 
