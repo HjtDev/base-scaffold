@@ -156,6 +156,7 @@ Two additions to the tree worth explaining:
 
   `details` is always present (`{}` when nothing is field-level, so a client never has to branch on whether the key exists). `request_id` is the same correlation ID `config/logging.py` stamps on every log line. `code` is a stable, machine-readable string clients branch on — adding one is a minor change, renaming one is breaking. The full set: `validation_error`, `parse_error`, `not_authenticated`, `authentication_failed`, `permission_denied`, `not_found`, `method_not_allowed`, `throttled`, `server_error`. An unhandled exception is logged (`logger.exception`) before being turned into a `server_error` envelope, so it still reaches Sentry; `message` on a `server_error` is generic with `DEBUG` off and carries the real exception text with it on. Headers DRF already sets — `Retry-After` on `throttled`, `WWW-Authenticate` on `not_authenticated` — are untouched, since the handler rewrites only `response.data`. This is the shape `APP-DESIGN.md` §4 asks every installed app package to bundle an internal equivalent of.
 - **Frontend baseline** — Next.js App Router (TypeScript, `strict`) with `@tanstack/react-query` and a shared API client already set up in `frontend/lib/`, so an installed frontend app-package's hooks have a consistent client to plug into out of the box instead of every app package bootstrapping its own.
+- **Analytics (optional)** — self-hosted [Umami](https://umami.is), `umami` + its own `umami-db` Postgres instance, behind the dev-only `analytics` compose profile (§8.2), same pattern as the `tooling` profile's `flower`/`mailpit`. Off by default: a plain `docker compose up` never starts it, and with `NEXT_PUBLIC_UMAMI_WEBSITE_ID` unset `frontend/app/layout.tsx` renders no script tag. `NEXT_PUBLIC_UMAMI_SCRIPT_URL`/`NEXT_PUBLIC_UMAMI_WEBSITE_ID` are frontend build ARGs, same build-time-only caveat as `NEXT_PUBLIC_API_URL` (§8.1). See `README.md`'s "Analytics (optional)" section for enabling it and the admin-password warning — Umami's default `admin`/`umami` login cannot be overridden by env.
 
 **Deliberately not included: authentication.** `SIMPLE_JWT` or any other auth configuration does not belong in the base scaffold — auth is its own standalone, versioned app package (per `APP-DESIGN.md`), installed into a project the same way payments or notifications would be. This keeps the scaffold auth-agnostic and keeps a project free to swap auth strategies without touching the base at all.
 
@@ -989,7 +990,7 @@ CMD ["npm", "run", "dev", "--", "--hostname", "0.0.0.0", "--port", "3000"]
 
 ### 8.2 Compose files
 
-`docker-compose.yml` (dev) and `docker-compose.prod.yml` share the same service list — `db`, `redis`, `backend`, `frontend`, `celery`, `celery-beat`, and optionally `flower` — but differ in what matters:
+`docker-compose.yml` (dev) and `docker-compose.prod.yml` share the same service list — `db`, `redis`, `backend`, `frontend`, `celery`, `celery-beat`, and optionally `flower`/`mailpit`/`umami`/`umami-db` — but differ in what matters:
 
 | | dev (`docker-compose.yml`) | prod (`docker-compose.prod.yml`) |
 |---|---|---|
@@ -998,6 +999,7 @@ CMD ["npm", "run", "dev", "--", "--hostname", "0.0.0.0", "--port", "3000"]
 | Ports | exposed on all interfaces | bound to `127.0.0.1:<port>` — nginx fronts public traffic |
 | `backend` command | image `CMD` (migrate + runserver) | image `CMD` (`uvicorn`, no migrate) |
 | Dev extras | `debug-toolbar`, `flower`, mailpit | none |
+| Optional profiles | `tooling` (`flower`, `mailpit`), `analytics` (`umami`, `umami-db`) | `analytics` only — activated via `COMPOSE_PROFILES=analytics` in `.env.prod`, see `README.md` |
 | Resource limits | none | `deploy.resources.limits` per service |
 | Log rotation | default | `max-size` / `max-file` per service |
 | `restart` | `unless-stopped` | `unless-stopped` |
@@ -1113,7 +1115,7 @@ Without resource limits a runaway container starves everything else on a shared 
 
 **Container names come from the root `.env`'s `PROJECT_NAME`** (`container_name: ${PROJECT_NAME}_backend`) rather than being hardcoded — that's what keeps this scaffold copy-paste-safe across projects, and it's what `deploy-prod.sh`'s health-check loop (§9) references directly.
 
-Use compose **profiles** for optional dev services (`flower`, `mailpit`, `debug-toolbar` sidecars) so `docker compose up` stays lean and `docker compose --profile tooling up` brings the extras. `mailpit` (not `mailhog` — MailHog has been unmaintained since 2020; mailpit is its drop-in successor, same 1025/8025 ports) is what `config/settings.py`'s `EMAIL_HOST` default resolves to by service name.
+Use compose **profiles** for optional services so `docker compose up` stays lean and `docker compose --profile <name> up` brings the extras. Two profiles exist: `tooling` (`flower`, `mailpit`, `debug-toolbar` sidecars — dev only) and `analytics` (`umami`, `umami-db` — dev *and* prod, §3). `mailpit` (not `mailhog` — MailHog has been unmaintained since 2020; mailpit is its drop-in successor, same 1025/8025 ports) is what `config/settings.py`'s `EMAIL_HOST` default resolves to by service name. `analytics` is the only profile defined in `docker-compose.prod.yml`; a production deploy activates it by setting `COMPOSE_PROFILES=analytics` in the root `.env.prod` rather than passing a `--profile` flag — `deploy-prod.sh` (§9) invokes compose with `--env-file`, and compose reads `COMPOSE_PROFILES` from that file the same way it reads every other key.
 
 ## 9. Deployment
 

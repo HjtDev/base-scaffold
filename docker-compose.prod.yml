@@ -162,6 +162,10 @@ services:
         # (§9 passes it via --env-file .env.prod). Changing it means rebuilding, never
         # restarting.
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?set NEXT_PUBLIC_API_URL in the root .env.prod}
+        # Deliberately `:-` (empty default), not `:?` — empty is the valid "analytics
+        # off" state and must not abort a build for a project that never enables it.
+        NEXT_PUBLIC_UMAMI_SCRIPT_URL: ${NEXT_PUBLIC_UMAMI_SCRIPT_URL:-}
+        NEXT_PUBLIC_UMAMI_WEBSITE_ID: ${NEXT_PUBLIC_UMAMI_WEBSITE_ID:-}
     restart: unless-stopped
     ports: ["127.0.0.1:${FRONTEND_PORT:-3000}:3000"]
     healthcheck:
@@ -180,7 +184,72 @@ services:
     logging: *logging
     security_opt: ["no-new-privileges:true"]
 
+  # ----------------------------------------------------------------- analytics profile
+  # Optional self-hosted Umami analytics. Off by default — activate on a given deploy by
+  # uncommenting COMPOSE_PROFILES=analytics in the root .env.prod (see that file's
+  # comment); no --profile flag is threaded through deploy-prod.sh, compose reads it
+  # from --env-file the same way it reads every other key here.
+  umami-db:
+    image: postgres:17-alpine
+    container_name: ${PROJECT_NAME}_umami_db
+    profiles: ["analytics"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: umami
+      POSTGRES_USER: umami
+      # `:-` here, deliberately NOT `:?`: compose interpolates every service's variables
+      # at parse time regardless of which profiles are active, so a `:?` guard here would
+      # break `docker compose build` for every project that never enables analytics.
+      # deploy-prod.sh's step 7 is the real enforcement — it fails the deploy if
+      # COMPOSE_PROFILES includes "analytics" and this is still empty.
+      POSTGRES_PASSWORD: ${UMAMI_DB_PASSWORD:-}
+    volumes: ["umamidata:/var/lib/postgresql/data"]
+    # No `ports:` — reachable only on the compose network, same rule as `db`.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U umami -d umami"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 512M }
+        reservations: { memory: 128M }
+    logging: *logging
+    security_opt: ["no-new-privileges:true"]
+
+  umami:
+    image: ghcr.io/umami-software/umami:3.3.1
+    container_name: ${PROJECT_NAME}_umami
+    profiles: ["analytics"]
+    restart: unless-stopped
+    environment:
+      # `:-` empty defaults throughout, same reasoning as umami-db above — deploy-prod.sh
+      # step 7 is what actually requires these to be set, and only when the analytics
+      # profile is active.
+      DATABASE_URL: postgresql://umami:${UMAMI_DB_PASSWORD:-}@umami-db:5432/umami
+      APP_SECRET: ${UMAMI_APP_SECRET:-}
+      # Required before any user can enable 2FA — the hardcoded admin/umami default
+      # password can't be overridden by env, so 2FA is the mitigation upstream offers.
+      TWO_FACTOR_ENCRYPTION_KEY: ${UMAMI_TWO_FACTOR_ENCRYPTION_KEY:-}
+    ports: ["127.0.0.1:${UMAMI_PORT:-3001}:3000"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/api/heartbeat"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      umami-db: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 512M }
+        reservations: { memory: 128M }
+    logging: *logging
+    security_opt: ["no-new-privileges:true"]
+
 volumes:
   pgdata:
   redisdata:
   media:
+  umamidata:

@@ -295,6 +295,31 @@ if (( ${#MISSING_ENV_FILES[@]} > 0 )); then
   exit 1
 fi
 
+# If the analytics profile is active, its secrets must be set. docker-compose.prod.yml
+# deliberately reads UMAMI_DB_PASSWORD/UMAMI_APP_SECRET/UMAMI_TWO_FACTOR_ENCRYPTION_KEY
+# with an empty (`:-`) default rather than `:?` — compose interpolates every service's
+# variables at parse time regardless of which profiles are active, so a `:?` guard there
+# would break `docker compose build` for every project that never enables analytics. This
+# is the actual enforcement point instead, and it only fires when analytics is on.
+ANALYTICS_ENABLED=false
+if remote "grep -qE '^COMPOSE_PROFILES=.*analytics' '${SERVER_PATH}/.env.prod'" 2>/dev/null; then
+  ANALYTICS_ENABLED=true
+  MISSING_UMAMI_KEYS=()
+  for key in UMAMI_DB_PASSWORD UMAMI_APP_SECRET UMAMI_TWO_FACTOR_ENCRYPTION_KEY; do
+    if ! remote "grep -qE '^${key}=.+' '${SERVER_PATH}/.env.prod'"; then
+      MISSING_UMAMI_KEYS+=("${key}")
+    fi
+  done
+  if (( ${#MISSING_UMAMI_KEYS[@]} > 0 )); then
+    {
+      echo "ERROR: COMPOSE_PROFILES=analytics is set in .env.prod, but the following required key(s) are empty:"
+      printf '  - %s\n' "${MISSING_UMAMI_KEYS[@]}"
+      echo "Set them in .env.prod (see .env.prod.example's analytics section for generate commands) before deploying."
+    } >&2
+    exit 1
+  fi
+fi
+
 # ---------------------------------------------------------------------------------------
 # step 8: build + start
 # ---------------------------------------------------------------------------------------
@@ -441,6 +466,9 @@ log "  commit: ${DEPLOYED_SHORT} (${DEPLOYED_DESCRIBE})"
 log "  server: ${SERVER_USER}@${SERVER_HOST}:${SERVER_PATH}"
 if (( ! SKIP_BACKUP_DB )); then
   log "  backup: backups/${BACKUP_NAME}"
+fi
+if [[ "${ANALYTICS_ENABLED}" == "true" ]]; then
+  warn "Analytics is enabled. If this is the first deploy with it on, log into Umami now and change the admin password (default admin/umami) before the analytics.<domain> DNS record goes public."
 fi
 
 if (( FOLLOW )); then
