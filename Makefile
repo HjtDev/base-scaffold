@@ -36,7 +36,7 @@
 # check is slow and, for npm, destructive to node_modules. `make install` is the lock-drift
 # gate: run it after touching pyproject.toml/uv.lock or package.json/package-lock.json.
 .DEFAULT_GOAL := help
-.PHONY: help install up down stop ps logs shell migrate migrations superuser backup \
+.PHONY: help install up down stop ps logs shell migrate migrations superuser backup analytics \
         lint fmt typecheck django-checks test test-fast build check deploy
 
 help:  ## Show this help
@@ -72,6 +72,8 @@ backup:        ## pg_dump the dev database to backups/<PROJECT_NAME>-<timestamp>
 	f="backups/$${name:-myproject}-$$(date +%Y%m%d-%H%M%S).sql.gz"; \
 	docker compose exec -T db sh -c 'pg_dump -U "$$POSTGRES_USER" "$$POSTGRES_DB"' | gzip -9 > "$$f"; \
 	echo "Wrote $$f"
+analytics:     ## Start the dev stack + Umami (compose profile: analytics)
+	docker compose --profile analytics up --build
 
 lint:          ## Ruff + ESLint + format checks (ruff format --check, prettier --check) — the CI gate
 	cd backend && uv run ruff check . && uv run ruff format --check .
