@@ -249,11 +249,16 @@ Never expose tokens, internal IDs, or password hashes in read output.
 Then tests: per §7.4, every view gets 200 for the permitted user, 403 for someone else's
 object, 401 unauthenticated. Plus one test asserting each throttle scope is actually applied.
 Run pytest and paste coverage.
+
+Then generate the schema: DJANGO_SETTINGS_MODULE=tests.backend.settings uv run python
+manage.py spectacular --file schema.yml --fail-on-warn, and commit schema.yml. This is what
+Phase 5 generates types.ts from — a complete @extend_schema on every view (above) is what
+makes that possible, so a warning here means Phase 5 will generate something wrong.
 ```
 
 **Verify:** coverage over threshold; the 403 IDOR test exists and genuinely fails when you
 temporarily remove the object-level check (worth actually trying — a permission test that
-passes against broken code is common and worthless).
+passes against broken code is common and worthless); `--fail-on-warn` is clean.
 
 ### Phase 5 — Frontend SDK
 
@@ -262,10 +267,16 @@ Phase 5: the frontend half. docs/APP-DESIGN.md §12 and docs/CONTRACT.md item 6.
 
 Create in frontend/:
 - package.json per §12's excerpt — react and @tanstack/react-query as peerDependencies
-  ONLY, an exports map with just ".", files: ["dist"], version matching backend/pyproject.toml
+  ONLY, openapi-typescript as a devDependency, a generate:types script, an exports map with
+  just ".", files: ["dist"], version matching backend/pyproject.toml
+- Run npm run generate:types (needs backend/schema.yml from Phase 4) to produce
+  src/schema.d.ts. Never hand-edit this file — it's regenerated, not written.
 - tsconfig.json (strict), tsconfig.build.json, vitest.config.ts, eslint config
-- src/types.ts — request/response types matching the Phase 4 serializers exactly, plus the
-  HttpClient interface (get/post/patch/delete) every SDK declares per §12
+- src/types.ts — hand-written, NOT a copy of the serializers: re-export narrowed aliases
+  from schema.d.ts (export type Notification = components["schemas"]["Notification"]) plus
+  the HttpClient interface (get/post/patch/delete) and the error envelope shape, per §12's
+  "Generated types" and "What stays hand-written" — those two are the only things typed by
+  hand here.
 - src/api/context.tsx — the provider + config hook that receives the host's client and
   basePath at runtime; §12's "SDK-to-host client contract" — never a hardcoded base URL,
   never an import of any host module
@@ -285,18 +296,26 @@ with a stub client satisfying HttpClient — not a real fetcher.
 Run npx tsc --noEmit, npm run lint, npm run test, npm run build. Paste all four.
 ```
 
-**Verify:** all four pass; `dist/index.d.ts` exists; no `any` on any request/response type.
+**Verify:** all four pass; `dist/index.d.ts` exists; no `any` on any request/response type;
+`git diff --exit-code src/schema.d.ts` after re-running `generate:types` is clean (the CI
+check from §10.1 — worth running now rather than finding out in CI).
 
 **Review for:** `react` accidentally in `dependencies` instead of `peerDependencies` (causes
 two-copies-of-React bugs in hosts that are miserable to debug); the manager or the config
 hook (`useXConfig`) leaking through `index.ts`; the manager built as a static class instead
-of constructed via `useMemo` from the injected client; `types.ts` drifting from the actual
-serializer output — check field by field against Phase 4, since this is where the two
-halves silently diverge.
+of constructed via `useMemo` from the injected client; anything in `types.ts` that duplicates
+a type `schema.d.ts` already exports instead of re-exporting it — that's the hand-written
+half quietly regaining the drift risk generation exists to remove.
 
 ### Phase 6 — Playground
 
-The step that catches what neither test suite can.
+The step that catches what generation and neither test suite can: runtime behaviour.
+
+Type drift is no longer this phase's job — §12's "Generated types" and the CI diffs in §10.1
+make a `types.ts`/serializer mismatch impossible to commit in the first place, so this phase
+is not the last line of defense against it the way it used to be. What it still is: the only
+place the two halves ever actually talk to each other over a real HTTP connection, which
+means it's still the only check for anything that only shows up at runtime.
 
 ```
 Phase 6: the playground. docs/APP-DESIGN.md §11.2.
@@ -309,16 +328,28 @@ Create playground/ — a minimal Django + Next.js host with both halves linked b
   depending on "file:../../frontend", and one page exercising every exported hook
 - playground/docker-compose.yml — Postgres, Redis, both halves
 
-Then bring it up, exercise every hook through the UI, and report: for each hook, did the
-response shape match types.ts exactly? List every discrepancy you find in field names,
-nullability, or nesting.
+Then bring it up and exercise every hook through the UI. Check, and report on, what only a
+live round trip can show:
+- does <XProvider client={apiClient}> actually wire up against a real host client — auth
+  headers, cookies, CORS — not just the stub client the Phase 5 tests used
+- does a mutation hook's onSuccess actually invalidate the right query keys and refetch
+- does pagination actually paginate against real data (next/previous, not an empty list)
+- does the error envelope render the way the hand-written type in types.ts claims — this is
+  the one shape with no generator behind it (§12), so it's still the only place this gets
+  checked against a real error response
+- anything environment-dependent: does the throttle_scope rate-limit for real, does a
+  signal/task side effect actually fire
+
+Report any discrepancy, and which of the two halves is actually wrong.
 ```
 
-**Verify:** every hook round-trips against the real backend with no type discrepancy. Fix
-discrepancies in `types.ts` **and** ask whether the serializer is the thing that's wrong.
+**Verify:** every hook round-trips against the real backend with correct runtime behaviour —
+auth, cache invalidation, pagination, and the error envelope shape all confirmed live.
 
-This phase exists because it's the only check that catches "the hook's shape drifted from the
-API's actual response" — no unit test on either half can, because each mocks the other.
+If a genuine type-level discrepancy still turns up here, that means a CI gate (§10.1) has a
+hole — `--fail-on-warn` missed something, or a hand-written type in `types.ts` duplicated
+rather than re-exported a generated one. Fix the immediate discrepancy, but also go back and
+close the gap in the gate itself; this phase catching it means it was going to reach a host.
 
 ### Phase 7 — README (the config block)
 
@@ -450,7 +481,7 @@ Ranked by how often they happen and how much they cost:
 |---|---|---|
 | Two apps can't be installed together | exact pins on `django`/`drf` instead of ranges (§1.1) | Discovered by a host mid-project; needs a release on the app to fix |
 | Host's `core/` receiver breaks after a minor upgrade | signal payload changed without a major bump (§6) | Fails in a background task, in production, silently |
-| Hook returns `undefined` for a field the API sends | `types.ts` drifted from serializers | Only caught by the playground (Phase 6) or by a host |
+| Hook returns `undefined` for a field the API sends | `types.ts` drifted from serializers | Was: only caught by the playground (Phase 6) or by a host. Now: caught by CI before the commit lands — §12's generated types make this the same class of bug as a missing migration |
 | Templates/translations missing after install | package data not declared (§2) | Looks like a host misconfiguration; wastes hours on the wrong side |
 | App works in the first host, breaks in the second | an assumption about host structure (`tools/`, a settings key, a URL prefix) | The failure the whole architecture exists to prevent |
 | Two copies of React in a host | `react` in `dependencies` not `peerDependencies` (§12) | Bizarre hook errors with no obvious cause |
@@ -459,9 +490,11 @@ Ranked by how often they happen and how much they cost:
 
 Every one of these is caught by something in `APP-DESIGN.md` §10's CI —
 `resolution-matrix` for the first, `wheel-smoke-test` for the fourth, `no-inter-app-imports`
-for the fifth, the lockstep job for the second. **That's the argument for building CI in Phase
-8 rather than "later"**: each of these bugs is discovered by a host project, at the worst
-possible time, if the gate isn't there.
+for the fifth, the lockstep job for the second, the `schema.yml`/`schema.d.ts` diff checks
+(§12) for the third. **That's the argument for building CI in Phase 8 rather than "later"**:
+each of these bugs is discovered by a host project, at the worst possible time, if the gate
+isn't there. The third row used to be the one exception — the only failure mode in this table
+with no CI gate behind it, caught only by a human clicking through Phase 6. It isn't anymore.
 
 ---
 
