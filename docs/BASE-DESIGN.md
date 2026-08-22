@@ -1270,7 +1270,8 @@ python3 -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).de
 # stdlib only — cryptography isn't installed until step 5, and its own Fernet.generate_key()
 # output is byte-for-byte the same shape as this (32 random bytes, urlsafe-base64), so either
 # is a valid key; this form just works before `uv sync` has run.
-# paste both into backend/.env, then fill in DB creds and PROJECT_NAME
+# paste both into backend/.env, then fill in the DB creds below them.
+# (PROJECT_NAME lives in the root .env, not backend/.env — step 3 already set it there.)
 
 # 5. Python + Node dependencies
 cd backend && uv sync --locked && cd ..    # --locked proves pyproject.toml and uv.lock agree
@@ -1285,13 +1286,15 @@ docker compose up --build
 # 8. First superuser
 docker compose exec backend python manage.py createsuperuser
 
-# 9. Sanity check
-open http://localhost:8000/healthz/     # 200
-open http://localhost:8000/api/schema/swagger-ui/
-open http://localhost:3000
+# 9. Sanity check — visit each in a browser (`open` is macOS-only; Linux: `xdg-open`)
+http://localhost:8000/healthz/            # 200
+http://localhost:8000/api/schema/swagger-ui/
+http://localhost:3000
 
-# 10. Commit
-git add . && git commit -m "chore: initial commit from base-scaffold vX.Y.Z"
+# 10. Commit — a fresh clone has no tags yet (step 2 deleted .git), so there's no real
+# version to put in place of vX.Y.Z; either drop that part or fill in the scaffold
+# version/commit you actually cloned from.
+git add . && git commit -m "chore: initial commit from base-scaffold"
 ```
 
 Steps 5–6 are `make install`; step 7 is `make up`; `make check` is the definition of done from

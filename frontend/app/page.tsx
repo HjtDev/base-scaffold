@@ -31,7 +31,7 @@ export default function Home() {
 
   return (
     <main style={{ fontFamily: "monospace", padding: "2rem" }}>
-      <h1>base-scaffold</h1>
+      <h1>Backend connectivity check</h1>
       <p>Backend status, fetched live from /healthz/:</p>
       {isLoading && <p>Checking backend…</p>}
       {isError && (

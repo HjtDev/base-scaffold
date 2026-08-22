@@ -210,7 +210,12 @@ cleanup() {
 trap cleanup EXIT
 
 SSH_OPTS=(-p "${SSH_PORT}" -o "ControlMaster=auto" -o "ControlPath=${CONTROL_PATH}" \
-          -o "ControlPersist=60s" -o "BatchMode=yes")
+          -o "ControlPersist=60s" -o "BatchMode=yes" -o "ConnectTimeout=10")
+# ConnectTimeout=10: without it, a blackholed/misconfigured SERVER_HOST hangs on the SSH
+# preflight below for the OS's default TCP connect timeout (~2 minutes on Linux) before
+# failing — confirmed while testing this script against an unreachable host (base-scaffold
+# Phase 9). Only bounds the initial dial; ControlMaster=auto reuses that same connection
+# for every later `remote`/`compose_remote` call, so this has no effect once connected.
 if [[ -n "${SSH_KEY_PATH}" ]]; then
   SSH_OPTS+=(-i "${SSH_KEY_PATH}")
 fi
