@@ -1113,6 +1113,44 @@ Production-only hardening, per service:
 
 Without resource limits a runaway container starves everything else on a shared VPS; without log rotation a long-running prod container fills the disk, and a full disk takes Postgres down with it. Both are three lines and both are the kind of thing nobody adds until after it happens once.
 
+**Volumes.** Every service that writes data it can't afford to lose gets a named volume, declared once at the bottom of each compose file:
+
+```yaml
+services:
+  db:
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+
+  redis:
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: ["redisdata:/data"]
+
+  backend:            # prod only — see below
+    volumes: ["media:/app/media"]
+
+  celery:              # same volume as backend — tasks touching uploads need the same files
+    volumes: ["media:/app/media"]
+
+  umami-db:            # only when the analytics profile is active
+    volumes: ["umamidata:/var/lib/postgresql/data"]
+
+volumes:
+  pgdata:
+  redisdata:
+  media:               # prod only
+  umamidata:
+```
+
+Why each one exists:
+
+- **`pgdata`** — the database itself. Without it, every `docker compose down` (dev) or container recreate (prod) wipes Postgres.
+- **`redisdata`** — `redis` runs with `--appendonly yes`, which writes an append-only file for durability; without a volume that AOF has nowhere to persist and Redis starts empty on every recreate.
+- **`media`** (**prod only**) — `Dockerfile.prod` does `mkdir -p /app/media` inside the image, and prod has no bind mount (source is baked in, §8.1). Without this volume, every `docker compose -f docker-compose.prod.yml up -d --build` — an ordinary deploy — would destroy every user upload: silently, and with nothing in the test suite positioned to catch it. Verified empirically: a file written to `/app/media` and a database row both survive a real `up -d --build` against a running prod-shaped stack; neither does without the corresponding volume. `celery` mounts the same volume — a task touching an upload needs to see the same files the request that queued it saw.
+- **`umamidata`** — Umami's own Postgres instance (§3); loses analytics history without it.
+
+Dev needs no `media` volume: `backend`'s bind mount (`./backend:/app`, §8.1) already puts `/app/media` on the host at `backend/media/` (gitignored) — the bind mount *is* the persistence mechanism there, the same way it is for the rest of the source tree. `staticfiles` is deliberately **not** a volume anywhere: a named volume is seeded once and then goes stale across rebuilds, while `collectstatic` (§9 step 6) regenerates it into the container's own layer on every deploy — a volume there would serve last release's CSS after this release's `collectstatic` ran.
+
+**Media is not covered by any backup this scaffold takes.** `deploy-prod.sh`'s rsync excludes `media` (§9 step 2) — uploads live only on the server, are never rsynced from a developer machine, and never travel the other direction either. `pg_dump` (§9 step 5, and `make backup`) captures database rows, not files on disk, so a restored database has upload *records* pointing at files that were never part of the backup. If a project needs uploaded files backed up, that's a separate mechanism (rsync to another host, object storage) that this scaffold does not provide — see §9's restore section.
+
 **Container names come from the root `.env`'s `PROJECT_NAME`** (`container_name: ${PROJECT_NAME}_backend`) rather than being hardcoded — that's what keeps this scaffold copy-paste-safe across projects, and it's what `deploy-prod.sh`'s health-check loop (§9) references directly.
 
 Use compose **profiles** for optional services so `docker compose up` stays lean and `docker compose --profile <name> up` brings the extras. Two profiles exist: `tooling` (`flower`, `mailpit`, `debug-toolbar` sidecars — dev only) and `analytics` (`umami`, `umami-db` — dev *and* prod, §3). `mailpit` (not `mailhog` — MailHog has been unmaintained since 2020; mailpit is its drop-in successor, same 1025/8025 ports) is what `config/settings.py`'s `EMAIL_HOST` default resolves to by service name. `analytics` is the only profile defined in `docker-compose.prod.yml`; a production deploy activates it by setting `COMPOSE_PROFILES=analytics` in the root `.env.prod` rather than passing a `--profile` flag — `deploy-prod.sh` (§9) invokes compose with `--env-file`, and compose reads `COMPOSE_PROFILES` from that file the same way it reads every other key.
@@ -1132,14 +1170,14 @@ SSH_KEY_PATH=
 
 `deploy-prod.sh`, run from the repo root, does — in order:
 
-1. **Validate** `deploy.prod.env` exists with `SERVER_HOST`/`SERVER_USER`/`SERVER_PATH` set; confirm it's being run from the repo root (checks for `docker-compose.prod.yml`); confirm the working tree is clean, **with no override** — deploying a dirty tree is how "it works on my machine" reaches production literally, and since this script rsyncs the working tree rather than a git ref, a clean tree is the only thing that makes "what commit is production running" answerable afterwards (see the `DEPLOYED_VERSION` file, step 2). Untracked files count as dirty too — an untracked file rsyncs exactly like a tracked one.
+1. **Validate** `deploy.prod.env` exists with `SERVER_HOST`/`SERVER_USER`/`SERVER_PATH` set; confirm it's being run from the repo root (checks for `docker-compose.prod.yml`); confirm the working tree is clean, **with no override** — deploying a dirty tree is how "it works on my machine" reaches production literally, and since this script rsyncs the working tree rather than a git ref, a clean tree is the only thing that makes "what commit is production running" answerable afterwards (see the `DEPLOYED_VERSION` history, step 7). Untracked files count as dirty too — an untracked file rsyncs exactly like a tracked one.
    **CI gate**, replacing the original "ideally, that CI is green" (too vague to implement as written): with `gh` authenticated and an `origin` remote configured, look up the current commit's CI run by SHA and fail if it's missing, still running, or didn't conclude `success`/`skipped` — printing the run URL either way. If `gh` is absent, unauthenticated, or there's no `origin`, the check can't run and is skipped with a note (that's the machine's state, not the commit's). `--skip-ci-check` bypasses it entirely.
-2. **Rsync** the working tree, excluding everything that shouldn't travel: `.git`, `.idea`/`.vscode`, `__pycache__`, `.venv`, `node_modules`, `.next`, `media`, `.env`/`.env.prod`/`.env.local` (those live only on the server), `deploy/deploy.prod.env`, `.mypy_cache`, `.ruff_cache`, `.pytest_cache`, `staticfiles`, `logs`, `backups` (step 5 writes here on the server; without this exclude, `rsync --delete` from a developer machine with no local `backups/` would wipe the server's own backup history). Immediately after, write a `DEPLOYED_VERSION` file at `$SERVER_PATH` recording the commit SHA, `git describe`, timestamp, and deployer — the payoff for step 1's strict clean-tree check.
+2. **Rsync** the working tree, excluding everything that shouldn't travel: `.git`, `.idea`/`.vscode`, `__pycache__`, `.venv`, `node_modules`, `.next`, `media`, `.env`/`.env.prod`/`.env.local` (those live only on the server), `deploy/deploy.prod.env`, `.mypy_cache`, `.ruff_cache`, `.pytest_cache`, `staticfiles`, `logs`, `backups` (step 5 writes here on the server; without this exclude, `rsync --delete` from a developer machine with no local `backups/` would wipe the server's own backup history).
 3. **On the server, over SSH:** confirm every required `.env.prod` file exists — **root and `backend/` only** (not `frontend/`: `NEXT_PUBLIC_API_URL` is a frontend build **ARG** sourced from the root `.env.prod`, never a runtime env file frontend reads) — and fail loudly rather than deploying with a missing config; then `docker compose -f docker-compose.prod.yml --env-file .env.prod build --pull` and `up -d --remove-orphans`. `--env-file` is mandatory on every compose invocation from here on — without it, compose auto-loads a plain `.env` and `PROJECT_NAME:?` either aborts or silently collides with the dev stack's container names.
 4. **Wait for the backend healthcheck** to report healthy (poll `docker inspect --format '{{.State.Health.Status}}'`, bounded retries — fail and dump the last 100 log lines rather than hanging forever).
 5. **Back up the database** — unconditional, before migrating, `pg_dump` run inside the `backend` container (which is why `Dockerfile.prod` installs `postgresql-client` in its runtime stage) and gzipped to `$SERVER_PATH/backups/`. `--skip-backup-db` opts out. A destructive migration with no backup is the one failure mode in this list you cannot recover from.
 6. **Only once healthy and backed up:** run `migrate --noinput` and `collectstatic --noinput` via `docker compose exec` — deliberately *not* in the container's boot command, so a migration runs once per deploy rather than once per replica or restart.
-7. **Verify** every expected container — from `docker compose config --services` (which already accounts for compose profiles, so it never expects a profile-gated service) — is actually `running` (not just that `up -d` returned success) and, now that everything has a healthcheck (§8.2), that each is `healthy` or has no healthcheck at all — dump logs for anything that isn't.
+7. **Verify** every expected container — from `docker compose config --services` (which already accounts for compose profiles, so it never expects a profile-gated service) — is actually `running` (not just that `up -d` returned success) and, now that everything has a healthcheck (§8.2), that each is `healthy` or has no healthcheck at all — dump logs for anything that isn't. **Only once verification passes**, append a line to `$SERVER_PATH/DEPLOYED_VERSION` recording the commit SHA, `git describe`, timestamp, and deployer — the payoff for step 1's strict clean-tree check, and what makes rollback (below) possible. This is an append, not an overwrite: `DEPLOYED_VERSION` accumulates the last 20 deploys that actually passed verification, oldest first. A deploy that fails this step writes nothing — the file is a history of releases that worked, not of releases that were attempted.
 8. **Reload nginx**, after `nginx -t` passes. nginx is a **host-level** reverse proxy here, not a compose service — both `backend`'s and `frontend`'s published ports bind `127.0.0.1` (§8.2), so this step runs over SSH with `sudo` (`nginx -t`, then `systemctl reload nginx`) rather than through compose. `SKIP_NGINX_RELOAD=1` skips it (e.g. nginx isn't installed on this host).
 9. **`--follow`** optionally tails `docker compose logs -f` after a successful deploy.
 
@@ -1148,6 +1186,46 @@ Migration ordering: steps 3–6 mean the new code is serving traffic *before* mi
 Failing loudly and early (missing env file, unhealthy container, failed nginx test, dirty tree) matters more here than anywhere else in this scaffold — a deploy script's whole job is to be the thing that stops a bad rollout, not the thing that quietly ships one.
 
 **nginx must not expose `/healthz/` publicly.** It's unauthenticated by design (§8.2), reports real infrastructure state (DB/cache reachability), and — unlike every other path — the compose healthcheck reaches it with an `X-Forwarded-Proto: https` header that makes Django skip the HTTPS redirect for that one request. That combination is intentional for the healthcheck's loopback call inside the compose network; it is not something a project's nginx config should ever forward from the public internet. Keep the location block internal-only (`allow` the Docker network, `deny all`, or simply don't proxy the path at all) rather than relying on Django alone to gate it — `config/views.py`'s `healthz()` masks the specific DB/cache error string once `DEBUG` is off, but it still confirms whether the database or cache is reachable, which is more than an anonymous caller on the internet needs to know.
+
+### Restoring a backup
+
+A backup that's never been restored is a file, not a backup. Three places write one — `deploy-prod.sh` step 5 (pre-migrate, on the server), `make backup` (dev), and the `backups` rsync exclude that protects the server's own history from being deleted by a deploy — so restoring needs to be a real, tested path, not something improvised at 3am.
+
+**Dev**: `make restore FILE=backups/<name>.sql.gz` (plain `.sql` also works). It refuses to run unless the dev stack's `db` service is actually up, and refuses outright if it detects `.env.prod` or `backend/.env.prod` anywhere in the checkout — those files live only on the server (§4.4), so their presence means this is a server checkout, not a dev clone, and `make restore` is the wrong tool. It then prints the database name it's about to drop and requires typing that name back before touching anything — not a `y/N`, because a `y/N` gets muscle-memoried through. Internally: `dropdb --if-exists --force`, `createdb`, then the dump streamed through `psql -v ON_ERROR_STOP=1 --single-transaction` — `pg_dump`'s plain output contains no `DROP` statements, so restoring onto a live schema without the drop/create first fails on every object that already exists, and without `ON_ERROR_STOP` + `--single-transaction` a restore that fails partway through leaves a half-populated database that still reports success.
+
+**Server-side** — app containers stopped first, since a backend still writing during a restore produces a database that matches neither the backup nor the pre-restore state:
+
+```bash
+cd "$SERVER_PATH"
+docker compose -f docker-compose.prod.yml --env-file .env.prod stop backend celery celery-beat
+
+# db stays up — the restore runs inside it
+docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T db \
+  dropdb --if-exists --force -U "$POSTGRES_USER" "$POSTGRES_DB"
+docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T db \
+  createdb -U "$POSTGRES_USER" -O "$POSTGRES_USER" "$POSTGRES_DB"
+gzip -dc backups/<name>.sql.gz | \
+  docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T db \
+  psql -v ON_ERROR_STOP=1 --single-transaction -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+
+docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
+# wait for backend to report healthy (§9 step 4's own poll loop), then:
+docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T backend python manage.py migrate --noinput
+```
+
+`migrate` at the end matters even when restoring the most recent backup: it's a no-op if the schema already matches, and the thing that saves you if the backup predates a migration that's already shipped in the code now running.
+
+**Media is not covered by this.** `pg_dump` captures database rows, not files on disk, and `media/` is excluded from the deploy rsync (§8.2, §9 step 2) — uploaded files exist only on the server and travel nowhere. Restoring the database from a backup taken before an upload will leave a row pointing at a file that no longer exists, and there is no scaffold-provided mechanism to prevent or repair that. If a project needs uploaded files backed up, that's a separate mechanism — rsync to another host, object storage with versioning — that **this scaffold does not provide; the operator owns it.**
+
+### Rolling back
+
+`deploy-prod.sh` writes `DEPLOYED_VERSION` (§9 step 7) but nothing reads it automatically — there is deliberately no `--rollback` flag. The script rsyncs the working tree, not a git ref, and refuses to run against a dirty tree with no override (step 1); an automated rollback would have to drive a local `git checkout` of the old commit before it could rsync anything, which makes it the manual procedure below with a wrapper around it — and it still couldn't undo a migration that already ran. Code that only executes during an incident, and can't fully do the one thing it promises, is worse than a written procedure. Roll back by hand:
+
+1. On the server, read `$SERVER_PATH/DEPLOYED_VERSION` — the last line is the current release, the line before it is the rollback target. Cross-check with `docker compose -f docker-compose.prod.yml --env-file .env.prod ps` first: after a deploy that failed verification (§9 step 7), the tree on disk can be newer than the last line recorded, since a failed deploy appends nothing.
+2. Locally, on a clean tree: `git checkout <previous-sha>` (detached `HEAD` is correct here — you're deploying a specific commit, not a branch). Stash first if the tree isn't clean; the deploy script's own clean-tree check still applies.
+3. Run `deploy/deploy-prod.sh` as normal. `--skip-ci-check` is reasonable here specifically because that commit's CI run already passed once, when it originally shipped.
+4. **The schema does not roll back.** Migrations the bad deploy applied stay applied — this is the same constraint the "Migration ordering" note above already describes, and it's why backward-compatible migrations are what actually makes a rollback survivable. If the bad deploy ran a destructive migration, checking out the old code is not enough on its own: restore the pre-migrate backup that step 5 took automatically (`backups/pre-migrate-<timestamp>.sql.gz`) using the procedure above.
+5. Return to the tip of your branch (`git checkout -`) once the incident is resolved, so the next normal deploy isn't run from a detached `HEAD`.
 
 ## 10. Bootstrapping & Setup Walkthrough
 
