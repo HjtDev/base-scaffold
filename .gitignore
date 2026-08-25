@@ -97,3 +97,12 @@ deploy/deploy.prod.env
 .ipynb_checkpoints
 profile_default/
 ipython_config.py
+
+# ---------------------------------------------------------------- graphify
+# Local knowledge-graph output — regenerable via /graphify, contains absolute
+# machine-local paths, not portable scaffold content.
+graphify-out/
+
+# Local graphify skill install + hook config — settings.json hardcodes an
+# absolute path to this machine's graphify binary, not portable scaffold content.
+.claude/
