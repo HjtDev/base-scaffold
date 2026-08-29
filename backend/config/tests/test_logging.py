@@ -1,5 +1,7 @@
-"""`config.logging` — the request-ID contextvar/middleware/filter and the environment-split
-logging config. The contextvar-reset test is the important one: under ASGI concurrency, a
+"""`config.logging`'s environment-split logging config, plus appkit's request-ID contextvar/
+middleware/filter wired into it (`MIDDLEWARE` in `config/settings.py`,
+`appkit.request_id.RequestIDMiddleware`) — see BASE-DESIGN.md §3 and this module's own
+docstring. The contextvar-reset test is the important one: under ASGI concurrency, a
 set-without-reset leaks one request's ID into whatever runs next on the same task, and only
 a test — not a code read — catches that.
 """
@@ -7,15 +9,11 @@ a test — not a code read — catches that.
 import asyncio
 import logging
 
+from appkit.request_id import RequestIDFilter, RequestIDMiddleware, request_id_var
 from django.http import HttpRequest, HttpResponse
 from django.test import RequestFactory
 
-from config.logging import (
-    RequestIDFilter,
-    RequestIDMiddleware,
-    build_logging_config,
-    request_id_var,
-)
+from config.logging import build_logging_config
 
 factory = RequestFactory()
 
