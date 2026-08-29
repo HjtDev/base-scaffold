@@ -818,6 +818,13 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           version: ${{ env.UV_VERSION }}
+      - name: Configure git credentials for private app-package repos
+        # pip-audit's own internal `pip install --dry-run --report` re-clones every git
+        # dependency independently of uv's resolution, so this job needs the same
+        # credential as backend-quality/backend-tests even though it never calls uv sync.
+        env:
+          APPKIT_TOKEN: ${{ secrets.APPKIT_TOKEN }}
+        run: git config --global url."https://${APPKIT_TOKEN}@github.com/".insteadOf "https://github.com/"
       - name: Audit backend dependencies
         # --no-default-groups, NOT --no-dev: backend/pyproject.toml sets
         # [tool.uv] default-groups = ["dev", "test"], and --no-dev is only an alias for
