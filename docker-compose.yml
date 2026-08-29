@@ -9,14 +9,6 @@
 
 name: "${PROJECT_NAME:?set PROJECT_NAME in .env, e.g. cp .env.example .env}"
 
-# Fulfills backend/Dockerfile's --mount=type=secret,id=gh_token — a fine-grained PAT with
-# read access to private app-package repos (appkit today). Export APPKIT_TOKEN in the
-# shell before `docker compose up --build`/`docker compose build`; unset or empty, the
-# build fails at the git-config step with a clear error rather than a silent bad clone.
-secrets:
-  gh_token:
-    environment: APPKIT_TOKEN
-
 services:
   db:
     image: postgres:17-alpine
@@ -52,7 +44,7 @@ services:
 
   backend:
     container_name: ${PROJECT_NAME}_backend
-    build: { context: ./backend, dockerfile: Dockerfile, secrets: [gh_token] }
+    build: { context: ./backend, dockerfile: Dockerfile }
     restart: unless-stopped
     env_file: [./backend/.env]
     # Bind mount = hot reload. The container venv lives at /opt/venv
@@ -73,7 +65,7 @@ services:
 
   celery:
     container_name: ${PROJECT_NAME}_celery
-    build: { context: ./backend, dockerfile: Dockerfile, secrets: [gh_token] }
+    build: { context: ./backend, dockerfile: Dockerfile }
     restart: unless-stopped
     env_file: [./backend/.env]
     volumes: ["./backend:/app"]
@@ -93,7 +85,7 @@ services:
 
   celery-beat:
     container_name: ${PROJECT_NAME}_celery_beat
-    build: { context: ./backend, dockerfile: Dockerfile, secrets: [gh_token] }
+    build: { context: ./backend, dockerfile: Dockerfile }
     restart: unless-stopped
     env_file: [./backend/.env]
     volumes: ["./backend:/app"]

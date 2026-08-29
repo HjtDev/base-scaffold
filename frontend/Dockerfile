@@ -16,10 +16,7 @@ COPY package.json package-lock.json ./
 # confirmed appkit packaging bug, not the normal install path — remove once appkit ships
 # an installable frontend half and package.json goes back to a real git dependency.
 COPY vendor ./vendor
-# --mount=type=ssh supports a private app-package repo's frontend half with no credential
-# baked into any layer — INTEGRATION-GUIDE.md §2. Optional until docker-compose.yml's
-# `docker compose build` actually forwards an agent; harmless otherwise.
-RUN --mount=type=cache,target=/root/.npm --mount=type=ssh npm ci
+RUN --mount=type=cache,target=/root/.npm npm ci
 
 # docker-compose.yml mounts ./frontend at /app and layers anonymous volumes over
 # /app/node_modules and /app/.next, so the host's copies (built for a different OS/arch,

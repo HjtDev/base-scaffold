@@ -290,8 +290,8 @@ Phase 5: Docker. Read docs/BASE-DESIGN.md §8 in full — every code block there
 
 Create:
 - backend/Dockerfile.prod — uv-based multi-stage, BuildKit cache mounts, UV_LINK_MODE=copy,
-  UV_COMPILE_BYTECODE=1, git in builder only, --mount=type=ssh, non-root uid 10001,
-  no migrate on boot, uvicorn with --proxy-headers and worker count from an env var
+  UV_COMPILE_BYTECODE=1, git in builder only, non-root uid 10001, no migrate on boot,
+  uvicorn with --proxy-headers and worker count from an env var
 - backend/Dockerfile — dev, single-stage, dev+test groups, migrate+runserver on boot,
   UV_PROJECT_ENVIRONMENT outside the bind mount (see the .venv gotcha in §8.1)
 - frontend/Dockerfile.prod — deps/builder/runner, standalone output, non-root,

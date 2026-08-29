@@ -635,10 +635,8 @@ The host project's CI is smaller than an app package's — it doesn't build whee
 # fork PR) goes green on the first push. SECRET_KEY and FERNET_KEY are generated fresh
 # inside backend-tests rather than read from secrets.*: a value committed to this repo, even
 # in a workflow file, is a value someone eventually copies into a real .env, and this
-# scaffold is copied into every future project. The expected future exception is a
-# private-repo token for installing an app package (APP-DESIGN.md §1.2) — that is a real
-# secret and belongs in secrets.*; adding it later is the documented exception, not a
-# violation of this rule.
+# scaffold is copied into every future project. App package repos (APP-DESIGN.md §1.2) are
+# public, so installing one never needs a secret either.
 name: CI
 on:
   push: { branches: [main] }
@@ -789,21 +787,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
-      # backend/Dockerfile.prod mounts --mount=type=secret,id=gh_token on its uv sync
-      # layers, to support a private app-package repo's git ref without ever putting a
-      # credential in a layer (APP-DESIGN.md §1.2) — appkit itself (HjtDev/appkit, private)
-      # is that repo as of this scaffold's appkit v1.0.0 integration. Sourced from the same
-      # APPKIT_TOKEN fine-grained PAT the backend-quality/backend-tests jobs use above —
-      # not an SSH deploy key, since appkit's frontend half is expected to move to GitHub
-      # Packages, which a deploy key can't authenticate to. frontend/Dockerfile.prod needs
-      # no such secret today (appkit's frontend half installs from the vendored
-      # frontend/vendor/ tarball, not a live git fetch).
       - name: Build production images (proves the prod path still builds)
-        env:
-          APPKIT_TOKEN: ${{ secrets.APPKIT_TOKEN }}
         run: |
-          docker buildx build -f backend/Dockerfile.prod backend --load -t app-backend:ci \
-            --secret id=gh_token,env=APPKIT_TOKEN
+          docker buildx build -f backend/Dockerfile.prod backend --load -t app-backend:ci
           docker buildx build -f frontend/Dockerfile.prod frontend --load -t app-frontend:ci \
             --build-arg NEXT_PUBLIC_API_URL=http://localhost:8000
       - name: Smoke-test the backend image boots
@@ -818,13 +804,6 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           version: ${{ env.UV_VERSION }}
-      - name: Configure git credentials for private app-package repos
-        # pip-audit's own internal `pip install --dry-run --report` re-clones every git
-        # dependency independently of uv's resolution, so this job needs the same
-        # credential as backend-quality/backend-tests even though it never calls uv sync.
-        env:
-          APPKIT_TOKEN: ${{ secrets.APPKIT_TOKEN }}
-        run: git config --global url."https://${APPKIT_TOKEN}@github.com/".insteadOf "https://github.com/"
       - name: Audit backend dependencies
         # --no-default-groups, NOT --no-dev: backend/pyproject.toml sets
         # [tool.uv] default-groups = ["dev", "test"], and --no-dev is only an alias for
@@ -925,8 +904,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    --mount=type=secret,id=gh_token \
-    git config --global url."https://$(cat /run/secrets/gh_token)@github.com/".insteadOf "https://github.com/" && \
     uv sync --locked --no-install-project --no-default-groups --no-editable
 
 # Layer 2: the project itself. Invalidated by any code change, which is fine — it's fast.
@@ -966,8 +943,7 @@ CMD ["uvicorn", "config.asgi:application", \
 ```
 
 Notes on the deliberate choices:
-- **`git` is installed in the builder only** — it's needed to resolve the `git+https://…` app package refs, and it has no business being in the runtime image.
-- **`--mount=type=secret,id=gh_token`** supports private app package repos without ever putting a credential in a layer (see `APP-DESIGN.md` §1.2) — a fine-grained PAT (`APPKIT_TOKEN`), not an SSH deploy key, since a package's frontend half may live on GitHub Packages, which a deploy key can't authenticate to. Build with `docker buildx build --secret id=gh_token,env=APPKIT_TOKEN`.
+- **`git` is installed in the builder only** — it's needed to resolve the `git+https://…` app package refs (public repos still need `git` to clone, just no credential — see `APP-DESIGN.md` §1.2), and it has no business being in the runtime image.
 - **No migrate on boot.** See §9 for why that's a deploy-script step.
 - **`--proxy-headers`** matters because prod binds to `127.0.0.1` behind nginx; without it every client IP in your logs is the proxy's. Its companion, `--forwarded-allow-ips`, is deliberately NOT baked into this image — see the CMD comment above and §3.
 - **Base image digests are pinned automatically**, not as a manual step: `renovate.json` sets `pinDigests: true`, so Renovate opens a PR converting `python:3.14-slim` (and every other base image in the repo — both frontend Dockerfiles, `ghcr.io/astral-sh/uv:0.11`, the compose service images) to `python:3.14-slim@sha256:…` shortly after this workflow first runs, and keeps the digest current from then on. Reproducibility is the whole point of the prod image; a floating tag quietly undermines it. The trade-off — a base image only gets security patches via a Renovate PR, not silently on rebuild — is acceptable only because Renovate is actually running; a project that disables it should drop the digest pins too, or it sits on a frozen image indefinitely.
@@ -990,8 +966,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    --mount=type=secret,id=gh_token \
-    git config --global url."https://$(cat /run/secrets/gh_token)@github.com/".insteadOf "https://github.com/" && \
     uv sync --locked --no-install-project
 COPY . /app
 RUN mkdir -p /app/logs /app/static /app/staticfiles /app/media
@@ -1012,10 +986,9 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 # vendor/ before npm ci: a package.json "file:./vendor/..." dependency (appkit's frontend
 # half, currently — see frontend/vendor/README.md) must exist in the build context before
-# npm resolves it. --mount=type=ssh supports a private app-package repo's frontend half
-# with no credential baked into any layer, same reasoning as the backend Dockerfile above.
+# npm resolves it.
 COPY vendor ./vendor
-RUN --mount=type=cache,target=/root/.npm --mount=type=ssh npm ci
+RUN --mount=type=cache,target=/root/.npm npm ci
 
 FROM node:24-alpine AS builder
 WORKDIR /app
@@ -1052,7 +1025,7 @@ WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY package.json package-lock.json ./
 COPY vendor ./vendor
-RUN --mount=type=cache,target=/root/.npm --mount=type=ssh npm ci
+RUN --mount=type=cache,target=/root/.npm npm ci
 COPY . .
 EXPOSE 3000
 CMD ["npm", "run", "dev", "--", "--hostname", "0.0.0.0", "--port", "3000"]

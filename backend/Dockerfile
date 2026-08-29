@@ -26,16 +26,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # No --no-default-groups / --no-dev here: dev wants both the dev and test groups
 # ([tool.uv] default-groups in backend/pyproject.toml already selects them).
-# --mount=type=secret (a fine-grained PAT, not an SSH deploy key — appkit's frontend half
-# moves to GitHub Packages next, which deploy keys can't authenticate to) supports private
-# app-package repos with no credential baked into any layer. docker-compose.yml's
-# build.secrets wires this from $APPKIT_TOKEN — export it before `docker compose up
-# --build`. See APP-DESIGN.md §1.2.
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    --mount=type=secret,id=gh_token \
-    git config --global url."https://$(cat /run/secrets/gh_token)@github.com/".insteadOf "https://github.com/" && \
     uv sync --locked --no-install-project
 
 # Kept even though compose bind-mounts over it, so `docker compose run --no-deps backend`

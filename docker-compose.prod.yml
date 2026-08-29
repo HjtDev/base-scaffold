@@ -15,15 +15,6 @@ x-logging: &logging
   # Without rotation a long-running prod container fills the disk, and a full disk takes
   # Postgres down with it.
 
-# Fulfills backend/Dockerfile.prod's --mount=type=secret,id=gh_token — a fine-grained PAT
-# with read access to private app-package repos (appkit today). Whoever runs `docker
-# compose -f docker-compose.prod.yml build` (deploy-prod.sh, today, run by hand) needs
-# APPKIT_TOKEN exported in that shell — this is a build-time credential, deliberately not
-# read from backend/.env.prod, which is a runtime env file.
-secrets:
-  gh_token:
-    environment: APPKIT_TOKEN
-
 services:
   db:
     image: postgres:17-alpine
@@ -67,7 +58,7 @@ services:
 
   backend:
     container_name: ${PROJECT_NAME}_backend
-    build: { context: ./backend, dockerfile: Dockerfile.prod, secrets: [gh_token] }
+    build: { context: ./backend, dockerfile: Dockerfile.prod }
     restart: unless-stopped
     env_file: [./backend/.env.prod]
     environment:
@@ -119,7 +110,7 @@ services:
 
   celery:
     container_name: ${PROJECT_NAME}_celery
-    build: { context: ./backend, dockerfile: Dockerfile.prod, secrets: [gh_token] }
+    build: { context: ./backend, dockerfile: Dockerfile.prod }
     restart: unless-stopped
     env_file: [./backend/.env.prod]
     volumes: ["media:/app/media"]   # tasks touching uploads need the same files
@@ -147,7 +138,7 @@ services:
 
   celery-beat:
     container_name: ${PROJECT_NAME}_celery_beat
-    build: { context: ./backend, dockerfile: Dockerfile.prod, secrets: [gh_token] }
+    build: { context: ./backend, dockerfile: Dockerfile.prod }
     restart: unless-stopped
     env_file: [./backend/.env.prod]
     # --pidfile is required, not decoration — celery beat writes no pidfile at all by

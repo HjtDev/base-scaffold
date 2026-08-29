@@ -80,17 +80,9 @@ When asked to add a new app package, follow this protocol exactly, in order. Mos
    If the app has extras you need: `uv add "notifications-app[sms] @ git+…@v1.4.2#subdirectory=backend"`.
    This updates `pyproject.toml` *and* `uv.lock`. Both are committed.
 
-   If the ref is a **private** repo, four CI jobs need a credential from this point on:
-   `backend-quality` and `backend-tests` (both run `uv sync --locked` directly),
-   `docker-build` (`backend/Dockerfile.prod` mounts `--mount=type=secret,id=gh_token` on
-   its `uv sync` layers), and `security-audit` (`pip-audit`'s own internal `pip install
-   --dry-run` re-clones every git dependency independently of `uv`'s resolution — it needs
-   the credential too, even though it never calls `uv sync` itself). Add a fine-grained
-   PAT — Contents: read, scoped to the private repo(s) — as the `APPKIT_TOKEN` repository
-   secret; the workflow's own top comment names this as the one documented exception to
-   "zero configured secrets." Not an SSH deploy key: a package's frontend half may live on
-   GitHub Packages, which a deploy key can't
-   authenticate to (`APP-DESIGN.md` §1.2).
+   App package repos in this ecosystem are public, so the ref resolves with no credential —
+   in `uv sync` locally, in CI, and in a Docker build alike. See `APP-DESIGN.md` §1.2 for
+   what a fork takes on if it makes its own app-package repos private instead.
 
    Every app depends on `appkit` (`APP-DESIGN.md` §1.1), and `uv` resolves that transitively —
    there's no separate `uv add appkit` step on the backend half. The one thing to check if that

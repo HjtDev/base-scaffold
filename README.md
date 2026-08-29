@@ -49,13 +49,11 @@ python3 -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).de
 # (PROJECT_NAME lives in the root .env, not backend/.env — step 3 already set it there.)
 
 # 5. Python + Node dependencies
-# `uv sync` needs READ access to HjtDev/appkit (private — appkit is app package #1, a
-# dependency of this scaffold from day one, not something installed later). Either an SSH
-# agent with a deploy key loaded, or a token via:
-#   git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
-# The frontend half needs no such access today — it installs from the committed
-# frontend/vendor/appkit-1.0.0.tgz, not a live git fetch; see that directory's README.md
-# for why (a confirmed appkit packaging defect), and for how to re-pin once it's fixed.
+# `uv sync` pulls HjtDev/appkit (app package #1, a dependency of this scaffold from day
+# one) from a public repo — no credential needed. The frontend half needs no live git
+# fetch either today — it installs from the committed frontend/vendor/appkit-1.0.0.tgz;
+# see that directory's README.md for why (a confirmed appkit packaging defect), and for
+# how to re-pin once it's fixed.
 cd backend && uv sync --locked && cd ..    # --locked proves pyproject.toml and uv.lock agree
 cd frontend && npm ci && cd ..
 

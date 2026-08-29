@@ -12,10 +12,7 @@ COPY package.json package-lock.json ./
 # confirmed appkit packaging bug, not the normal install path — remove once appkit ships
 # an installable frontend half and package.json goes back to a real git dependency.
 COPY vendor ./vendor
-# --mount=type=ssh supports a private app-package repo's frontend half with no credential
-# baked into any layer — INTEGRATION-GUIDE.md §2. CI's docker-build job forwards an agent
-# via `--ssh default`; a local `docker compose build` needs one too for a private repo.
-RUN --mount=type=cache,target=/root/.npm --mount=type=ssh npm ci
+RUN --mount=type=cache,target=/root/.npm npm ci
 
 FROM node:24-alpine AS builder
 WORKDIR /app
