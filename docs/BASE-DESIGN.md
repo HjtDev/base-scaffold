@@ -820,8 +820,26 @@ jobs:
         # install already trusts via `uv sync --locked` elsewhere in this workflow). Hash
         # integrity of the resolved set is already uv's job, not pip-audit's; this job only
         # needs versions to check against the vulnerability database.
+        #
+        # `uvx --python "$(cat ../.python-version)"` — without it, uv runs the pip-audit
+        # *tool itself* under whatever system Python is already on the runner's PATH (Ubuntu
+        # 24.04's default is 3.12), not the project's pinned 3.14. pip-audit's own internal
+        # `pip install --dry-run` (needed to resolve appkit's git ref to a version, since
+        # that can't be read statically from a VCS URL) inherits that same interpreter —
+        # confirmed empirically — so it fails outright against appkit's own
+        # `requires-python = ">=3.13"` before a single dependency is actually audited.
+        # Reading the version from the root .python-version, not hardcoding "3.14", keeps
+        # this the same single source of truth CLAUDE.md's pinned-versions table requires.
+        #
+        # No --strict: appkit is a git dependency, not a PyPI package, and pip-audit's PyPI
+        # vulnerability service has no CVE data for it under any circumstance — --strict
+        # would turn that permanent, structural gap into a permanent job failure. Without
+        # it, pip-audit still audits every dependency it CAN resolve against PyPI and lists
+        # appkit as an explicit, visible skip ("Dependency not found on PyPI") rather than
+        # hiding the gap — confirmed empirically that every other pinned dependency still
+        # gets checked.
         run: |
-          uvx pip-audit --strict --no-deps \
+          uvx --python "$(cat ../.python-version)" pip-audit --no-deps \
             -r <(uv export --locked --no-default-groups --no-hashes --format requirements-txt)
         shell: bash
         working-directory: backend
@@ -836,7 +854,7 @@ jobs:
 
 **Renovate** (`renovate.json`) keeps the pins fresh: `uv.lock`, `package-lock.json`, the Docker base image digests (pinned automatically — `pinDigests: true`, see §8.1), GitHub Action versions, pre-commit `rev`s, and — most importantly for this architecture — the `git+…@vX.Y.Z` app package refs. Group patch/minor/digest into a weekly PR; keep majors separate. A pinned-everything architecture without an update bot doesn't stay pinned, it stays *stale*, which is worse.
 
-**Required vs. advisory status checks:** set `backend-quality`, `backend-tests`, `frontend`, and `docker-build` as required in the branch protection rule for `main`. Leave `security-audit` advisory-only — it already declares `continue-on-error: true` for exactly this reason, but that flag only protects the *workflow run's* overall conclusion, not the individual job's. Confirmed empirically on this repo's first real PR: `gh api .../jobs` reported `security-audit`'s own `conclusion` as `"failure"` — because `pip-audit --strict` correctly found real, unrelated CVEs in a pinned dependency — while the *run's* conclusion was `"success"`. A branch protection rule keys off the individual job's conclusion, so making `security-audit` required would block every PR the moment any dependency anywhere has a known CVE, which is the noisy failure mode `continue-on-error` exists to avoid.
+**Required vs. advisory status checks:** set `backend-quality`, `backend-tests`, `frontend`, and `docker-build` as required in the branch protection rule for `main`. Leave `security-audit` advisory-only — it already declares `continue-on-error: true` for exactly this reason, but that flag only protects the *workflow run's* overall conclusion, not the individual job's. Confirmed empirically on this repo's first real PR: `gh api .../jobs` reported `security-audit`'s own `conclusion` as `"failure"` — because `pip-audit` correctly found real, unrelated CVEs in a pinned dependency — while the *run's* conclusion was `"success"`. A branch protection rule keys off the individual job's conclusion, so making `security-audit` required would block every PR the moment any dependency anywhere has a known CVE, which is the noisy failure mode `continue-on-error` exists to avoid.
 
 **Required-check names are job names, not job IDs' cosmetic wrapper — they're the same string.** Renaming a job (the `<job_id>:` key, e.g. `backend-quality:`) silently un-requires it: GitHub's branch protection matches on the job's display name, so an old required-check entry just stops finding a match and is quietly ignored rather than erroring. Renaming a job in `ci.yml` must be paired with updating the branch protection rule in the same change.
 
