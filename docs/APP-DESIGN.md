@@ -1158,7 +1158,15 @@ jobs:
       # what PyPI currently serves for that exact file, failing pip-audit's hash check even
       # though `uv sync --locked` installed correctly from the same lockfile elsewhere in
       # the same run.
-      - run: uvx pip-audit --strict --no-deps -r <(uv export --locked --no-default-groups --no-hashes --format requirements-txt)
+      # `uvx --python "$(cat ../.python-version)"` — without it, uv runs pip-audit itself
+      # under the runner's system Python (Ubuntu 24.04 defaults to 3.12), not this app's
+      # pinned version, and pip-audit's internal `pip install --dry-run` (needed to resolve
+      # any git-sourced dependency, e.g. appkit itself, to a version) inherits that same
+      # interpreter — confirmed empirically on base-scaffold's own CI, see BASE-DESIGN.md §7.
+      # No --strict, for the same reason: a git dependency has no PyPI vulnerability data
+      # under any circumstance, so --strict turns that structural gap into a permanent
+      # failure instead of an explicit, visible skip.
+      - run: uvx --python "$(cat ../.python-version)" pip-audit --no-deps -r <(uv export --locked --no-default-groups --no-hashes --format requirements-txt)
         shell: bash
         working-directory: backend
 

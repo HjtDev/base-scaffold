@@ -188,8 +188,26 @@ jobs:
         # install already trusts via `uv sync --locked` elsewhere in this workflow). Hash
         # integrity of the resolved set is already uv's job, not pip-audit's; this job only
         # needs versions to check against the vulnerability database.
+        #
+        # `uvx --python "$(cat ../.python-version)"` — without it, uv runs the pip-audit
+        # *tool itself* under whatever system Python is already on the runner's PATH (Ubuntu
+        # 24.04's default is 3.12), not the project's pinned 3.14. pip-audit's own internal
+        # `pip install --dry-run` (needed to resolve appkit's git ref to a version, since
+        # that can't be read statically from a VCS URL) inherits that same interpreter —
+        # confirmed empirically — so it fails outright against appkit's own
+        # `requires-python = ">=3.13"` before a single dependency is actually audited.
+        # Reading the version from the root .python-version, not hardcoding "3.14", keeps
+        # this the same single source of truth CLAUDE.md's pinned-versions table requires.
+        #
+        # No --strict: appkit is a git dependency, not a PyPI package, and pip-audit's PyPI
+        # vulnerability service has no CVE data for it under any circumstance — `--strict`
+        # would turn that permanent, structural gap into a permanent job failure. Without
+        # it, pip-audit still audits every dependency it CAN resolve against PyPI and lists
+        # appkit as an explicit, visible skip ("Dependency not found on PyPI") rather than
+        # hiding the gap — confirmed empirically that every other pinned dependency still
+        # gets checked.
         run: |
-          uvx pip-audit --strict --no-deps \
+          uvx --python "$(cat ../.python-version)" pip-audit --no-deps \
             -r <(uv export --locked --no-default-groups --no-hashes --format requirements-txt)
         shell: bash
         working-directory: backend
