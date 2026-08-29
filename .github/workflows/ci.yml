@@ -3,9 +3,8 @@
 # `FERNET_KEY` are generated fresh inside the backend-tests job rather than read from
 # `secrets.*`, on purpose: a value committed to this repo (even in a workflow file) is a
 # value someone eventually copies into a real `.env`, and this scaffold is copied into every
-# future project. The expected future exception is a private-repo token for installing an
-# app package (APP-DESIGN.md §1.2) — that is a real secret and belongs in `secrets.*`; adding
-# it later is not a violation of this rule, it's the documented exception to it.
+# future project. All app packages (appkit included) are public repositories, so a git+https
+# ref needs no credential at all to clone.
 name: CI
 on:
   push: { branches: [main] }
@@ -156,12 +155,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
-      # backend/Dockerfile.prod mounts `--mount=type=ssh` on its `uv sync` layers, to support
-      # private git app-package refs without ever putting a credential in a layer
-      # (APP-DESIGN.md §1.2). BuildKit treats that mount as optional by default, so it builds
-      # fine with no agent today. The moment this project installs its first private app
-      # package, add a `webfactory/ssh-agent` (or equivalent) step here loading a deploy key,
-      # and pass `--ssh default` on the buildx call below — see INTEGRATION-GUIDE.md §2.
       - name: Build production images (proves the prod path still builds)
         run: |
           docker buildx build -f backend/Dockerfile.prod backend --load -t app-backend:ci

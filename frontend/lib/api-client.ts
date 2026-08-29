@@ -1,7 +1,11 @@
 /**
  * The shared fetcher every host page (and, per BASE-DESIGN.md §3/§8.1, every installed
  * app SDK's own low-level client) plugs into: base URL resolution, credentials handling,
- * and one consistent error shape.
+ * and one consistent error shape. Satisfies appkit's `HttpClient` interface (see the
+ * assertion at the bottom of this file) — appkit owns that interface and the shared
+ * `ApiClientProvider`, this module owns actually constructing the client: reading
+ * `NEXT_PUBLIC_API_URL`, handling CSRF, deciding the credentials mode. All host
+ * configuration appkit's own README is explicit it never owns.
  *
  * The base URL is read from `NEXT_PUBLIC_API_URL` lazily, inside `request()`, never at
  * module load — `NEXT_PUBLIC_*` is inlined at build time (BASE-DESIGN.md §8.1), but this
@@ -11,60 +15,17 @@
  * accident. `frontend/.env.example` is the only file allowed to hardcode that URL.
  */
 
+import { apiErrorFromEnvelope, ApiError, type HttpClient } from "appkit";
+
 const REQUEST_ID_HEADER = "X-Request-ID";
 const CSRF_COOKIE_NAME = "csrftoken";
 const CSRF_HEADER_NAME = "X-CSRFToken";
 const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
-/**
- * Mirrors the DRF error envelope from `backend/tools/mixins.py`:
- * `{"error": {"code", "message", "details", "request_id"}}`. `code` is one of the nine
- * stable values that handler emits (`validation_error`, `parse_error`,
- * `not_authenticated`, `authentication_failed`, `permission_denied`, `not_found`,
- * `method_not_allowed`, `throttled`, `server_error`) — except `"unknown_error"`, which is
- * this client's own code for a response that isn't the envelope at all (an nginx error
- * page, a truncated body, a non-JSON 500), so a caller never has to guard against a
- * `JSON.parse` crash reaching them.
- */
-export class ApiError extends Error {
-  readonly status: number;
-  readonly code: string;
-  readonly details: Record<string, unknown>;
-  readonly requestId: string | null;
-  readonly retryAfter: string | null;
-
-  constructor(
-    message: string,
-    options: {
-      status: number;
-      code: string;
-      details?: Record<string, unknown>;
-      requestId?: string | null;
-      retryAfter?: string | null;
-    },
-  ) {
-    super(message);
-    this.name = "ApiError";
-    this.status = options.status;
-    this.code = options.code;
-    this.details = options.details ?? {};
-    this.requestId = options.requestId ?? null;
-    this.retryAfter = options.retryAfter ?? null;
-  }
-}
-
-interface EnvelopeError {
-  code: string;
-  message: string;
-  details: Record<string, unknown>;
-  request_id: string | null;
-}
-
-function isEnvelope(data: unknown): data is { error: EnvelopeError } {
-  if (typeof data !== "object" || data === null || !("error" in data)) return false;
-  const error = (data as { error?: unknown }).error;
-  return typeof error === "object" && error !== null && "code" in error && "message" in error;
-}
+// Re-exported so host pages keep one import site (`@/lib/api-client`) for both the client
+// and the error type it throws, rather than reaching into `appkit` directly for one and
+// this module for the other.
+export { ApiError };
 
 function readCookie(name: string): string | null {
   if (typeof document === "undefined") return null; // server-side render, no cookies yet
@@ -98,7 +59,7 @@ export interface ApiClientOptions {
   credentials?: RequestCredentials;
 }
 
-export class ApiClient {
+export class ApiClient implements HttpClient {
   private readonly baseUrl: string | undefined;
   private readonly defaultCredentials: RequestCredentials;
 
@@ -136,12 +97,13 @@ export class ApiClient {
     if (!contentType.includes("application/json")) {
       const text = await response.text();
       if (!response.ok) {
-        throw new ApiError(text || `${response.status} ${response.statusText}`, {
-          status: response.status,
-          code: "unknown_error",
-          requestId,
-          retryAfter,
-        });
+        // appkit's apiErrorFromEnvelope never recognises a plain string as the envelope
+        // (isApiErrorEnvelope requires an object), so this always falls to its generic
+        // "Request failed with status ${status}." message — the raw body text is still
+        // reachable via ApiError.body, just no longer the thrown .message. A documented
+        // behaviour difference from this client's pre-appkit version, which used the raw
+        // text as the message here.
+        throw apiErrorFromEnvelope({ status: response.status, body: text, requestId, retryAfter });
       }
       return text as unknown as T;
     }
@@ -151,32 +113,18 @@ export class ApiClient {
       data = await response.json();
     } catch {
       // A non-JSON body claiming to be JSON, or an empty body — never let JSON.parse's
-      // SyntaxError escape to the caller.
-      throw new ApiError(`${response.status} ${response.statusText}`, {
+      // SyntaxError escape to the caller. No parsed body to hand off, so apiErrorFromEnvelope
+      // falls straight to its generic fallback.
+      throw apiErrorFromEnvelope({
         status: response.status,
-        code: "unknown_error",
+        body: undefined,
         requestId,
         retryAfter,
       });
     }
 
     if (!response.ok) {
-      if (isEnvelope(data)) {
-        const { error } = data;
-        throw new ApiError(error.message, {
-          status: response.status,
-          code: error.code,
-          details: error.details ?? {},
-          requestId: error.request_id ?? requestId,
-          retryAfter,
-        });
-      }
-      throw new ApiError(`${response.status} ${response.statusText}`, {
-        status: response.status,
-        code: "unknown_error",
-        requestId,
-        retryAfter,
-      });
+      throw apiErrorFromEnvelope({ status: response.status, body: data, requestId, retryAfter });
     }
 
     return data as T;
@@ -225,3 +173,10 @@ export function getApiBaseUrl(): string {
 
 /** The default instance every host page uses. */
 export const apiClient = new ApiClient();
+
+// Compile-time proof this client satisfies appkit's HttpClient interface — `implements
+// HttpClient` on the class above already enforces this structurally, but a drift here
+// (appkit changing the interface, or this client's methods diverging) fails `tsc`, not a
+// runtime call three layers into some installed app's SDK.
+const _satisfiesHttpClient: HttpClient = apiClient;
+void _satisfiesHttpClient;

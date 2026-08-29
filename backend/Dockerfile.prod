@@ -28,13 +28,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # [tool.uv] default-groups = ["dev", "test"], and --no-dev is only an alias for
 # --no-group dev — it leaves "test" (pytest, pytest-django, factory-boy, freezegun)
 # installed in what's meant to be the production image.
-# --mount=type=ssh supports private app-package repos with no credential in any layer
-# (build with `docker buildx build --ssh default`); swap for
-# --mount=type=secret,id=gh_token for the token flow. See APP-DESIGN.md §1.2.
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    --mount=type=ssh \
     uv sync --locked --no-install-project --no-default-groups --no-editable
 
 # Layer 2: the project itself. Invalidated by any code change, which is fine — it's fast.
@@ -83,8 +79,18 @@ EXPOSE 8000
 # --proxy-headers matters because prod binds 127.0.0.1 behind nginx; without it every
 # client IP in the logs is the proxy's.
 #
+# No --forwarded-allow-ips here, on purpose: uvicorn's own click CLI reads it from
+# $UVICORN_FORWARDED_ALLOW_IPS natively (auto_envvar_prefix="UVICORN"), same mechanism as
+# --workers/$UVICORN_WORKERS above. docker-compose.prod.yml sets it, defaulting to Docker's
+# own bridge-network range — "*" here would make uvicorn trust the *leftmost* (client-
+# controlled) X-Forwarded-For entry, not nginx's appended one (verified directly against
+# uvicorn's installed ProxyHeadersMiddleware: `_TrustedHosts.always_trust` short-circuits
+# to `x_forwarded_for_hosts[0]`), making REMOTE_ADDR spoofable end-to-end. See
+# appkit.net.client_ip and REST_FRAMEWORK["NUM_PROXIES"] in config/settings.py for the two
+# other places this same proxy-hop count has to agree — BASE-DESIGN.md §4.2.
+#
 # Pin the base image by digest (python:3.14-slim@sha256:...) in a real project and let
 # Renovate bump it — reproducibility is the whole point of this image.
 CMD ["uvicorn", "config.asgi:application", \
      "--host", "0.0.0.0", "--port", "8000", \
-     "--proxy-headers", "--forwarded-allow-ips", "*"]
+     "--proxy-headers"]

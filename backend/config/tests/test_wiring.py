@@ -7,6 +7,7 @@ apps installed — they're tripwires for the first app install, not assertions a
 
 import re
 from pathlib import Path
+from typing import cast
 
 import pytest
 from django.conf import settings
@@ -64,7 +65,12 @@ def _throttle_scopes_from_source() -> set[str]:
 
 def test_every_throttle_scope_exists_in_default_throttle_rates() -> None:
     scopes = _throttle_scopes_from_urlconf() | _throttle_scopes_from_source()
-    configured = set(settings.REST_FRAMEWORK.get("DEFAULT_THROTTLE_RATES", {}))
+    # django-stubs infers REST_FRAMEWORK's value type from the literal dict in settings.py,
+    # which is now legitimately heterogeneous (appkit's own NUM_PROXIES entry is an int
+    # alongside the string/list/dict values here) — that union isn't uniformly Iterable[str],
+    # so set(...) can't resolve an overload against it without this explicit narrowing.
+    rates = cast("dict[str, str]", settings.REST_FRAMEWORK.get("DEFAULT_THROTTLE_RATES", {}))
+    configured = set(rates)
     missing = scopes - configured
     assert missing == set(), f"throttle_scope(s) with no DEFAULT_THROTTLE_RATES entry: {missing}"
 

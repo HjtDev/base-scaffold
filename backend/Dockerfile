@@ -29,7 +29,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    --mount=type=ssh \
     uv sync --locked --no-install-project
 
 # Kept even though compose bind-mounts over it, so `docker compose run --no-deps backend`

@@ -1,13 +1,21 @@
-"""Tests `standard_exception_handler` through a real DRF view dispatch — not by calling
-the handler function directly — so each branch is exercised the way it actually runs in
-production, including the headers DRF itself attaches (`WWW-Authenticate`, `Retry-After`).
-Throwaway `APIView` subclasses are dispatched straight off `APIRequestFactory`, with no
-`ROOT_URLCONF` involved: URL resolution plays no part in exception handling.
+"""Tests `appkit.exceptions.standard_exception_handler` through a real DRF view dispatch —
+not by calling the handler function directly — so each branch is exercised the way it
+actually runs in production, including the headers DRF itself attaches (`WWW-Authenticate`,
+`Retry-After`). Throwaway `APIView` subclasses are dispatched straight off
+`APIRequestFactory`, with no `ROOT_URLCONF` involved: URL resolution plays no part in
+exception handling.
+
+Ported from the scaffold's own former `tools/tests/test_mixins.py`, which tested the local
+copy this module replaced — see BASE-DESIGN.md §3. Shape/code/status assertions now go
+through appkit's own `appkit_assert_error_envelope` (`-p appkit.testing`) rather than
+hand-rolled dict comparisons, so a divergence in appkit's envelope breaks this suite instead
+of silently passing.
 """
 
 import uuid
 from unittest.mock import patch
 
+from appkit.testing import appkit_assert_error_envelope
 from django.http import Http404
 from django.test import override_settings
 from rest_framework import exceptions
@@ -32,15 +40,9 @@ def test_validation_error() -> None:
 
     response = _dispatch(View)
 
-    assert response.status_code == 400
-    assert response.data == {
-        "error": {
-            "code": "validation_error",
-            "message": "Validation failed.",
-            "details": {"name": ["This field is required."]},
-            "request_id": "-",
-        }
-    }
+    appkit_assert_error_envelope(response, code="validation_error", status=400)
+    assert response.data["error"]["message"] == "Validation failed."
+    assert response.data["error"]["details"] == {"name": ["This field is required."]}
 
 
 def test_parse_error() -> None:
@@ -50,8 +52,7 @@ def test_parse_error() -> None:
 
     response = _dispatch(View)
 
-    assert response.status_code == 400
-    assert response.data["error"]["code"] == "parse_error"
+    appkit_assert_error_envelope(response, code="parse_error", status=400)
     assert response.data["error"]["message"] == "malformed body"
     assert response.data["error"]["details"] == {}
 
@@ -68,8 +69,7 @@ def test_not_authenticated_carries_www_authenticate_header() -> None:
 
     response = _dispatch(View)
 
-    assert response.status_code == 401
-    assert response.data["error"]["code"] == "not_authenticated"
+    appkit_assert_error_envelope(response, code="not_authenticated", status=401)
     assert response["WWW-Authenticate"].startswith("Basic")
 
 
@@ -82,8 +82,7 @@ def test_authentication_failed_carries_www_authenticate_header() -> None:
 
     response = _dispatch(View)
 
-    assert response.status_code == 401
-    assert response.data["error"]["code"] == "authentication_failed"
+    appkit_assert_error_envelope(response, code="authentication_failed", status=401)
     assert response.data["error"]["message"] == "bad credentials"
     assert "WWW-Authenticate" in response
 
@@ -95,8 +94,7 @@ def test_permission_denied() -> None:
 
     response = _dispatch(View)
 
-    assert response.status_code == 403
-    assert response.data["error"]["code"] == "permission_denied"
+    appkit_assert_error_envelope(response, code="permission_denied", status=403)
     assert response.data["error"]["message"] == "no"
 
 
@@ -107,8 +105,7 @@ def test_not_found_converts_django_http404() -> None:
 
     response = _dispatch(View)
 
-    assert response.status_code == 404
-    assert response.data["error"]["code"] == "not_found"
+    appkit_assert_error_envelope(response, code="not_found", status=404)
 
 
 def test_method_not_allowed() -> None:
@@ -118,8 +115,7 @@ def test_method_not_allowed() -> None:
 
     response = _dispatch(View, method="delete")
 
-    assert response.status_code == 405
-    assert response.data["error"]["code"] == "method_not_allowed"
+    appkit_assert_error_envelope(response, code="method_not_allowed", status=405)
 
 
 def test_throttled_preserves_retry_after_header() -> None:
@@ -147,8 +143,7 @@ def test_throttled_preserves_retry_after_header() -> None:
 
         second = _dispatch(View, REMOTE_ADDR=ident)
 
-    assert second.status_code == 429
-    assert second.data["error"]["code"] == "throttled"
+    appkit_assert_error_envelope(second, code="throttled", status=429)
     assert "Retry-After" in second
 
 
@@ -160,8 +155,7 @@ def test_unhandled_exception_hides_internals_with_debug_off() -> None:
     with override_settings(DEBUG=False):
         response = _dispatch(View)
 
-    assert response.status_code == 500
-    assert response.data["error"]["code"] == "server_error"
+    appkit_assert_error_envelope(response, code="server_error", status=500)
     assert "boom" not in response.data["error"]["message"]
 
 
@@ -173,6 +167,5 @@ def test_unhandled_exception_shows_internals_with_debug_on() -> None:
     with override_settings(DEBUG=True):
         response = _dispatch(View)
 
-    assert response.status_code == 500
-    assert response.data["error"]["code"] == "server_error"
+    appkit_assert_error_envelope(response, code="server_error", status=500)
     assert "boom - internal detail" in response.data["error"]["message"]

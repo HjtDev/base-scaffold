@@ -57,14 +57,11 @@ Therefore:
     Make the distinction crisp, because this is the rule most likely to be misapplied later: §6 bans an app **reaching sideways into another app's models and services** — an ambient assumption that some other app just happens to be installed in the same host. A declared shared dependency is a different category entirely: it's explicit, versioned, resolved by `uv`, and sitting right there in `pyproject.toml` for anyone to see — the same category as the `jwt-core` dependency an OTP app would declare, not the category §6 exists to prevent. The test is mechanical: *is it in `[project.dependencies]`?* If yes, it's a declared dependency. If no, and you're importing it anyway, that's the §6 violation.
 - **Test/lint tooling never appears in `dependencies`.** It goes in `[dependency-groups]`, which is never installed by a consumer — see §3.
 
-### 1.2 Private repository access
+### 1.2 Repository access
 
-`git+https://github.com/yourorg/...` implies a private org repo in most real setups. Two supported ways to authenticate, both documented so a host (or a CI job, or a Docker build) never has to guess:
+App package repos in this ecosystem are **public**. `git+https://github.com/yourorg/...` clones with no credential at all — a fresh clone, a CI job, and a Docker build all resolve the ref the same way, with zero configured secrets.
 
-- **SSH:** use `git+ssh://git@github.com/yourorg/notifications-app.git@v1.4.2#subdirectory=backend` and rely on the developer's SSH agent. In Docker, forward the agent with `RUN --mount=type=ssh`.
-- **Token:** set `UV_INDEX_...`/`GIT_CONFIG` credential helpers, or in CI export a `GH_TOKEN` and configure `git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"`. In Docker use `RUN --mount=type=secret,id=gh_token`.
-
-**Never pass a token as a Docker `ARG` or `ENV`.** It persists in image history even if a later layer unsets it.
+A fork that makes its own app-package repos private takes on the burden of wiring auth back in everywhere that ref is resolved: `uv sync` (locally and in CI), any Docker build stage that runs it, and — separately — `pip-audit`'s own internal re-clone of git dependencies. That's an SSH deploy key (`git+ssh://git@github.com/...`, forwarded into Docker with `RUN --mount=type=ssh`) or a token (`git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"`, forwarded into Docker with `RUN --mount=type=secret,id=gh_token`) — never a token passed as a Docker `ARG` or `ENV`, since that persists in image history even if a later layer unsets it. Not this repo's problem to solve in advance; solve it if and when it's real.
 
 ### 1.3 Namespacing convention
 
@@ -923,8 +920,8 @@ This is a recommendation, not something that auto-registers — the host creates
 ## Installation — frontend
 
 ```bash
-npm install "github:yourorg/appkit#v1.2.0:frontend"          # if not already installed
-npm install "github:yourorg/notifications-app#v1.4.2:frontend"
+npm install "github:yourorg/appkit#v1.2.0::path:frontend"          # if not already installed
+npm install "github:yourorg/notifications-app#v1.4.2::path:frontend"
 ```
 
 ## Usage — add this app's basePath to the shared provider, then import hooks from the package root

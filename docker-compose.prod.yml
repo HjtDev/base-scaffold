@@ -65,6 +65,15 @@ services:
       # Read natively by uvicorn's CLI (click auto_envvar_prefix="UVICORN") — no shell, no
       # entrypoint. Derive from the host's CPU count in a real deploy; 3 matches §8.1.
       UVICORN_WORKERS: ${UVICORN_WORKERS:-3}
+      # The trust boundary for --proxy-headers (Dockerfile.prod's CMD sets no
+      # --forwarded-allow-ips of its own — see its comment). Defaults to Docker's own
+      # bridge-network range, which covers both the default bridge (172.17.0.0/16) and
+      # every compose-created network (172.18-31.0.0/16) — verified directly against this
+      # stack's own network. Narrow this to nginx's exact address for a tighter bound, or
+      # widen it if nginx runs on a custom, non-default Docker network. Keep this,
+      # REST_FRAMEWORK["NUM_PROXIES"], and APPKIT["TRUSTED_PROXY_COUNT"] (both in
+      # config/settings.py) in agreement — BASE-DESIGN.md §4.2.
+      UVICORN_FORWARDED_ALLOW_IPS: ${UVICORN_FORWARDED_ALLOW_IPS:-172.16.0.0/12}
     # Source is baked into the image — NO bind mount (§8.2). media is the one exception:
     # without a volume, every deploy's container recreate would destroy all user uploads.
     # staticfiles is deliberately NOT a volume — a named volume is seeded once and then

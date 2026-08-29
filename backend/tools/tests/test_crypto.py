@@ -51,14 +51,17 @@ def test_token_from_a_different_key_is_rejected() -> None:
 
 
 def test_invalid_fernet_key_raises_improperly_configured() -> None:
-    crypto._fernet.cache_clear()  # must bust the lru_cache so it re-reads settings
+    crypto._cipher.cache_clear()  # must bust the lru_cache so it re-reads settings
     try:
         with override_settings(FERNET_KEY="not-a-valid-fernet-key"):
             try:
                 crypto.encrypt("hello world")
             except ImproperlyConfigured as exc:
+                # tools/crypto.py re-raises appkit's own ImproperlyConfigured naming
+                # FERNET_KEY specifically — appkit's own message names neither Django
+                # settings nor any env var, since it takes its key as a plain argument.
                 assert "FERNET_KEY" in str(exc)
             else:
                 raise AssertionError("invalid FERNET_KEY did not raise ImproperlyConfigured")
     finally:
-        crypto._fernet.cache_clear()  # restore, so tests that run after this one see a valid key
+        crypto._cipher.cache_clear()  # restore, so tests that run after this one see a valid key
