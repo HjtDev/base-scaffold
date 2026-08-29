@@ -1,6 +1,5 @@
+import { makeQueryClient } from "appkit";
 import { describe, expect, it } from "vitest";
-
-import { makeQueryClient } from "../lib/query-client";
 
 describe("makeQueryClient", () => {
   it("returns a fresh QueryClient on every call, not a module-level singleton", () => {
