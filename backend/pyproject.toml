@@ -16,10 +16,16 @@ dependencies = [
     "python-decouple>=3.8,<4.0",
     "whitenoise>=6.8,<7.0",
     "uvicorn[standard]>=0.34,<1.0",
+    # Deliberately redundant with appkit[crypto]'s own `cryptography` dependency below:
+    # tools/crypto.py imports nothing from `cryptography` directly (it wraps
+    # appkit.crypto.Cipher), but a scaffold that ships FERNET_KEY as a first-class,
+    # always-required env var (config/settings.py) shouldn't have that guarantee depend on
+    # an app's extras selection. See BASE-DESIGN.md §3.
     "cryptography>=50,<51",
     "structlog>=25,<26",
     "sentry-sdk[django,celery]>=2.20,<3.0",
     # ---- installed app packages get appended here by `uv add`, one line each
+    "appkit[crypto]>=1.0,<2.0",
 ]
 
 [dependency-groups]
@@ -47,6 +53,9 @@ test = [
 # and leaves "test" (pytest, factory-boy, freezegun) installed. Use `--no-default-groups`
 # there instead. See backend/Dockerfile.prod.
 default-groups = ["dev", "test"]
+
+[tool.uv.sources]
+appkit = { git = "https://github.com/HjtDev/appkit.git", tag = "v1.0.0", subdirectory = "backend" }
 
 # Uncomment ONE of these blocks while developing an app package against this project.
 # Swap it back to the pinned git ref before committing — see INTEGRATION-GUIDE.md §7.
@@ -124,7 +133,7 @@ pythonpath = ["."]
 testpaths = ["core/tests", "config/tests", "tools/tests"]
 python_files = ["test_*.py"]
 addopts = """
-  -ra --strict-markers --strict-config
+  -ra --strict-markers --strict-config -p appkit.testing
   --cov=core --cov=tools --cov=config
   --cov-report=term-missing --cov-fail-under=80
 """

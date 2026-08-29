@@ -44,13 +44,14 @@ INSTALLED_APPS = [
     "drf_spectacular",
     "corsheaders",
     "django_celery_beat",
+    "appkit",  # shared app-package dependency — AppKitConfig.ready() registers its system checks
     "core",
     # ---- installed app packages get added here, one line each, per their own README
 ]
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
-    "config.logging.RequestIDMiddleware",  # before anything that logs, after security
+    "appkit.request_id.RequestIDMiddleware",  # before anything that logs, after security
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
@@ -133,8 +134,20 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_CLASSES": ["rest_framework.throttling.ScopedRateThrottle"],
     "DEFAULT_THROTTLE_RATES": {},  # app installs add their own scopes here
     # Every DRF-raised error (validation, 401/403/404/405/429, unhandled 500) renders in
-    # the one envelope shape documented in tools/mixins.py and BASE-DESIGN.md §3.
-    "EXCEPTION_HANDLER": "tools.mixins.standard_exception_handler",
+    # the one envelope shape documented in BASE-DESIGN.md §3 / appkit's README.
+    "EXCEPTION_HANDLER": "appkit.exceptions.standard_exception_handler",
+    "DEFAULT_PAGINATION_CLASS": "appkit.pagination.DefaultPagination",
+    # No PAGE_SIZE here — DefaultPagination carries its own (25).
+    #
+    # Keeps DRF's own X-Forwarded-For parsing (SimpleRateThrottle.get_ident(), used by
+    # ScopedRateThrottle above) in step with APPKIT["TRUSTED_PROXY_COUNT"] below —
+    # appkit.net.client_ip can't be injected into DRF's own throttle ident logic, so this
+    # has to be set independently, or ScopedRateThrottle silently keys off the client's own
+    # spoofable leftmost X-Forwarded-For entry instead of the trusted, proxy-appended one.
+    # This, TRUSTED_PROXY_COUNT below, and UVICORN_FORWARDED_ALLOW_IPS
+    # (docker-compose.prod.yml) all describe the same physical proxy-hop count and must be
+    # changed together — see BASE-DESIGN.md §4.2.
+    "NUM_PROXIES": 1,
 }
 
 SPECTACULAR_SETTINGS = {
@@ -142,6 +155,17 @@ SPECTACULAR_SETTINGS = {
     "DESCRIPTION": "",
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
+}
+
+# ---------------------------------------------------------------------------- appkit
+# Every key below already defaults to the value shown if omitted entirely — see appkit's
+# README "Settings" section. TRUSTED_PROXY_COUNT must track REST_FRAMEWORK["NUM_PROXIES"]
+# above and UVICORN_FORWARDED_ALLOW_IPS (docker-compose.prod.yml) — see the comment there.
+APPKIT: dict[str, Any] = {
+    "CACHE_TIMEOUT": 60,
+    "TRUSTED_PROXY_COUNT": 1,
+    "MAX_UPLOAD_BYTES": 10 * 1024 * 1024,
+    "SITE_URL": "",
 }
 
 # ---------------------------------------------------------------------------- admin theme
