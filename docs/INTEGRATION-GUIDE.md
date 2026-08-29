@@ -80,11 +80,14 @@ When asked to add a new app package, follow this protocol exactly, in order. Mos
    If the app has extras you need: `uv add "notifications-app[sms] @ git+…@v1.4.2#subdirectory=backend"`.
    This updates `pyproject.toml` *and* `uv.lock`. Both are committed.
 
-   If the ref is a **private** repo, CI's `docker-build` job (`BASE-DESIGN.md` §7) needs an
-   SSH agent from this point on: add a `webfactory/ssh-agent` (or equivalent) step loading a
-   deploy key, and pass `--ssh default` on the `docker buildx build` calls — `backend/Dockerfile.prod`
-   already mounts `--mount=type=ssh` for exactly this, but the mount is optional until the
-   workflow actually forwards an agent (`APP-DESIGN.md` §1.2).
+   If the ref is a **private** repo, three CI jobs need a credential from this point on:
+   `backend-quality` and `backend-tests` (both run `uv sync --locked` directly) and
+   `docker-build` (`backend/Dockerfile.prod` mounts `--mount=type=secret,id=gh_token` on
+   its `uv sync` layers). Add a fine-grained PAT — Contents: read, scoped to the private
+   repo(s) — as the `APPKIT_TOKEN` repository secret; the workflow's own top comment names
+   this as the one documented exception to "zero configured secrets." Not an SSH deploy
+   key: a package's frontend half may live on GitHub Packages, which a deploy key can't
+   authenticate to (`APP-DESIGN.md` §1.2).
 
    Every app depends on `appkit` (`APP-DESIGN.md` §1.1), and `uv` resolves that transitively —
    there's no separate `uv add appkit` step on the backend half. The one thing to check if that

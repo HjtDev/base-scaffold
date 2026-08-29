@@ -1,11 +1,14 @@
-# BASE-DESIGN.md §7. This workflow requires ZERO configured GitHub repository secrets — a
-# freshly cloned project (and every fork PR) goes green on the first push. `SECRET_KEY` and
+# BASE-DESIGN.md §7. This workflow requires ZERO configured GitHub repository secrets for a
+# host that installs no private app package — a freshly cloned project (and every fork PR)
+# goes green on the first push, as long as `APPKIT_TOKEN` stays unneeded. `SECRET_KEY` and
 # `FERNET_KEY` are generated fresh inside the backend-tests job rather than read from
 # `secrets.*`, on purpose: a value committed to this repo (even in a workflow file) is a
 # value someone eventually copies into a real `.env`, and this scaffold is copied into every
-# future project. The expected future exception is a private-repo token for installing an
-# app package (APP-DESIGN.md §1.2) — that is a real secret and belongs in `secrets.*`; adding
-# it later is not a violation of this rule, it's the documented exception to it.
+# future project. `APPKIT_TOKEN` is the documented exception: a fine-grained PAT (Contents:
+# read) scoped to HjtDev/appkit and any other private app-package repos this project
+# installs — appkit is app package #1, so this repo needs it from the moment appkit is
+# installed, not as a later addition. Never an SSH deploy key here: appkit's frontend half
+# is expected to move to GitHub Packages, which a deploy key can't authenticate to.
 name: CI
 on:
   push: { branches: [main] }
@@ -44,6 +47,15 @@ jobs:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
           cache-dependency-glob: backend/uv.lock
+      - name: Configure git credentials for private app-package repos
+        # Rewrites every https://github.com/ git URL to carry APPKIT_TOKEN, so `uv sync`
+        # can clone appkit (and any other private app-package repo declared in
+        # [tool.uv.sources]) without a credential appearing in pyproject.toml/uv.lock
+        # themselves. GitHub Actions redacts secrets.* values from all log output for this
+        # job automatically — this step never echoes the token.
+        env:
+          APPKIT_TOKEN: ${{ secrets.APPKIT_TOKEN }}
+        run: git config --global url."https://${APPKIT_TOKEN}@github.com/".insteadOf "https://github.com/"
       - run: uv sync --locked
         working-directory: backend
         # --locked is the point: it FAILS if pyproject.toml and uv.lock disagree, which is
@@ -97,6 +109,10 @@ jobs:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
           cache-dependency-glob: backend/uv.lock
+      - name: Configure git credentials for private app-package repos
+        env:
+          APPKIT_TOKEN: ${{ secrets.APPKIT_TOKEN }}
+        run: git config --global url."https://${APPKIT_TOKEN}@github.com/".insteadOf "https://github.com/"
       - run: uv sync --locked
         working-directory: backend
       - name: Generate ephemeral CI keys
@@ -156,21 +172,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
-      # backend/Dockerfile.prod and frontend/Dockerfile.prod both mount `--mount=type=ssh`
-      # on their dependency-install layers (`uv sync` / `npm ci`), to support a private
-      # app-package repo's git ref without ever putting a credential in a layer
-      # (APP-DESIGN.md §1.2) — appkit itself (`HjtDev/appkit`, private) is that repo as of
-      # this scaffold's appkit v1.0.0 integration. Add a deploy key with read access to
-      # every private app-package repo this project installs as the
-      # APPKIT_DEPLOY_KEY secret; rename it if the project's private repos outgrow one key.
-      - uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.APPKIT_DEPLOY_KEY }}
+      # backend/Dockerfile.prod mounts --mount=type=secret,id=gh_token on its uv sync
+      # layers, to support a private app-package repo's git ref without ever putting a
+      # credential in a layer (APP-DESIGN.md §1.2) — appkit itself (HjtDev/appkit, private)
+      # is that repo as of this scaffold's appkit v1.0.0 integration. Sourced from the same
+      # APPKIT_TOKEN fine-grained PAT the backend-quality/backend-tests jobs use above.
+      # frontend/Dockerfile.prod needs no such secret today (appkit's frontend half
+      # installs from the vendored frontend/vendor/ tarball, not a live git fetch).
       - name: Build production images (proves the prod path still builds)
+        env:
+          APPKIT_TOKEN: ${{ secrets.APPKIT_TOKEN }}
         run: |
-          docker buildx build -f backend/Dockerfile.prod backend --load -t app-backend:ci --ssh default
+          docker buildx build -f backend/Dockerfile.prod backend --load -t app-backend:ci \
+            --secret id=gh_token,env=APPKIT_TOKEN
           docker buildx build -f frontend/Dockerfile.prod frontend --load -t app-frontend:ci \
-            --ssh default --build-arg NEXT_PUBLIC_API_URL=http://localhost:8000
+            --build-arg NEXT_PUBLIC_API_URL=http://localhost:8000
       - name: Smoke-test the backend image boots
         run: |
           docker run --rm app-backend:ci python -c "import django; print(django.get_version())"

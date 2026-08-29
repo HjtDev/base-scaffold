@@ -28,13 +28,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # [tool.uv] default-groups = ["dev", "test"], and --no-dev is only an alias for
 # --no-group dev — it leaves "test" (pytest, pytest-django, factory-boy, freezegun)
 # installed in what's meant to be the production image.
-# --mount=type=ssh supports private app-package repos with no credential in any layer
-# (build with `docker buildx build --ssh default`); swap for
-# --mount=type=secret,id=gh_token for the token flow. See APP-DESIGN.md §1.2.
+# --mount=type=secret supports private app-package repos with no credential baked into
+# any layer (build with `docker buildx build --secret id=gh_token,env=APPKIT_TOKEN`) — a
+# fine-grained PAT, not an SSH deploy key, since appkit's frontend half moves to GitHub
+# Packages next, which deploy keys can't authenticate to. See APP-DESIGN.md §1.2.
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    --mount=type=ssh \
+    --mount=type=secret,id=gh_token \
+    git config --global url."https://$(cat /run/secrets/gh_token)@github.com/".insteadOf "https://github.com/" && \
     uv sync --locked --no-install-project --no-default-groups --no-editable
 
 # Layer 2: the project itself. Invalidated by any code change, which is fine — it's fast.

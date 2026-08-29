@@ -789,21 +789,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
-      # backend/Dockerfile.prod and frontend/Dockerfile.prod both mount --mount=type=ssh on
-      # their dependency-install layers (uv sync / npm ci), to support a private
-      # app-package repo's git ref without ever putting a credential in a layer
-      # (APP-DESIGN.md §1.2) — appkit itself (HjtDev/appkit, private) is that repo as of
-      # this scaffold's appkit v1.0.0 integration. Add a deploy key with read access to
-      # every private app-package repo this project installs as the APPKIT_DEPLOY_KEY
-      # secret; rename it if the project's private repos outgrow one key.
-      - uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.APPKIT_DEPLOY_KEY }}
+      # backend/Dockerfile.prod mounts --mount=type=secret,id=gh_token on its uv sync
+      # layers, to support a private app-package repo's git ref without ever putting a
+      # credential in a layer (APP-DESIGN.md §1.2) — appkit itself (HjtDev/appkit, private)
+      # is that repo as of this scaffold's appkit v1.0.0 integration. Sourced from the same
+      # APPKIT_TOKEN fine-grained PAT the backend-quality/backend-tests jobs use above —
+      # not an SSH deploy key, since appkit's frontend half is expected to move to GitHub
+      # Packages, which a deploy key can't authenticate to. frontend/Dockerfile.prod needs
+      # no such secret today (appkit's frontend half installs from the vendored
+      # frontend/vendor/ tarball, not a live git fetch).
       - name: Build production images (proves the prod path still builds)
+        env:
+          APPKIT_TOKEN: ${{ secrets.APPKIT_TOKEN }}
         run: |
-          docker buildx build -f backend/Dockerfile.prod backend --load -t app-backend:ci --ssh default
+          docker buildx build -f backend/Dockerfile.prod backend --load -t app-backend:ci \
+            --secret id=gh_token,env=APPKIT_TOKEN
           docker buildx build -f frontend/Dockerfile.prod frontend --load -t app-frontend:ci \
-            --ssh default --build-arg NEXT_PUBLIC_API_URL=http://localhost:8000
+            --build-arg NEXT_PUBLIC_API_URL=http://localhost:8000
       - name: Smoke-test the backend image boots
         run: |
           docker run --rm app-backend:ci python -c "import django; print(django.get_version())"
@@ -916,7 +918,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    --mount=type=ssh \
+    --mount=type=secret,id=gh_token \
+    git config --global url."https://$(cat /run/secrets/gh_token)@github.com/".insteadOf "https://github.com/" && \
     uv sync --locked --no-install-project --no-default-groups --no-editable
 
 # Layer 2: the project itself. Invalidated by any code change, which is fine — it's fast.
@@ -957,7 +960,7 @@ CMD ["uvicorn", "config.asgi:application", \
 
 Notes on the deliberate choices:
 - **`git` is installed in the builder only** — it's needed to resolve the `git+https://…` app package refs, and it has no business being in the runtime image.
-- **`--mount=type=ssh`** supports private app package repos without ever putting a credential in a layer (see `APP-DESIGN.md` §1.2). Build with `docker buildx build --ssh default`, or swap to `--mount=type=secret,id=gh_token` for the token flow.
+- **`--mount=type=secret,id=gh_token`** supports private app package repos without ever putting a credential in a layer (see `APP-DESIGN.md` §1.2) — a fine-grained PAT (`APPKIT_TOKEN`), not an SSH deploy key, since a package's frontend half may live on GitHub Packages, which a deploy key can't authenticate to. Build with `docker buildx build --secret id=gh_token,env=APPKIT_TOKEN`.
 - **No migrate on boot.** See §9 for why that's a deploy-script step.
 - **`--proxy-headers`** matters because prod binds to `127.0.0.1` behind nginx; without it every client IP in your logs is the proxy's. Its companion, `--forwarded-allow-ips`, is deliberately NOT baked into this image — see the CMD comment above and §3.
 - **Base image digests are pinned automatically**, not as a manual step: `renovate.json` sets `pinDigests: true`, so Renovate opens a PR converting `python:3.14-slim` (and every other base image in the repo — both frontend Dockerfiles, `ghcr.io/astral-sh/uv:0.11`, the compose service images) to `python:3.14-slim@sha256:…` shortly after this workflow first runs, and keeps the digest current from then on. Reproducibility is the whole point of the prod image; a floating tag quietly undermines it. The trade-off — a base image only gets security patches via a Renovate PR, not silently on rebuild — is acceptable only because Renovate is actually running; a project that disables it should drop the digest pins too, or it sits on a frozen image indefinitely.
@@ -980,7 +983,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    --mount=type=ssh \
+    --mount=type=secret,id=gh_token \
+    git config --global url."https://$(cat /run/secrets/gh_token)@github.com/".insteadOf "https://github.com/" && \
     uv sync --locked --no-install-project
 COPY . /app
 RUN mkdir -p /app/logs /app/static /app/staticfiles /app/media
