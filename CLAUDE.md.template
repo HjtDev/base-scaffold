@@ -56,14 +56,25 @@ Installing an app package (full protocol: `docs/INTEGRATION-GUIDE.md` §2):
 
 ```bash
 cd backend  && uv add "git+https://github.com/{{ORG}}/<app>.git@vX.Y.Z#subdirectory=backend"
-cd frontend && npm install "github:{{ORG}}/<app>#vX.Y.Z:frontend"
+cd frontend && npm install "github:{{ORG}}/<app>#vX.Y.Z::path:frontend"
 # then: copy the app's README config block into config/settings.py, add .env keys,
 # mount URLs, migrate, add its banned-api line, `docker compose up --build`,
 # and update the table below.
 ```
 
+**Verify the frontend install actually resolved before trusting it** — confirmed on
+appkit's own v1.0.0 install: a subtly wrong git-subdirectory spec here can install
+silently to the wrong package with no error (`node -e "import('<pkg>').then(...)"` — if it
+throws `Cannot find module`/`ERR_PACKAGE_PATH_NOT_EXPORTED`, it didn't work).
+
 **Both halves must be at the same tag.** A restart without `--build` will not pick up a
 new package — that's the most common "I installed it but it isn't there."
+
+Every app declares `appkit` as a shared dependency (`uv` resolves it transitively; the
+frontend half installs once, explicitly — `docs/INTEGRATION-GUIDE.md` §2 steps 2–3). It is
+not itself an "installed app package" for the table below, and it's the one exception to
+`tools/`'s never-imported-by-an-app rule two rows down: `appkit` is always importable by an
+app, `tools/` never is.
 
 ## Installed app packages
 

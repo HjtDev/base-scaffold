@@ -923,8 +923,8 @@ This is a recommendation, not something that auto-registers — the host creates
 ## Installation — frontend
 
 ```bash
-npm install "github:yourorg/appkit#v1.2.0:frontend"          # if not already installed
-npm install "github:yourorg/notifications-app#v1.4.2:frontend"
+npm install "github:yourorg/appkit#v1.2.0::path:frontend"          # if not already installed
+npm install "github:yourorg/notifications-app#v1.4.2::path:frontend"
 ```
 
 ## Usage — add this app's basePath to the shared provider, then import hooks from the package root

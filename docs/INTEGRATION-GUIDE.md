@@ -100,18 +100,28 @@ When asked to add a new app package, follow this protocol exactly, in order. Mos
    upgrading `appkit` itself (§2.1). If `appkit` is later published to a private index instead,
    this step drops out entirely — a plain `appkit>=1.0,<2.0` resolves normally.
 
-3. **Install `appkit`'s frontend half, if this is the first app being installed.** Every SDK declares `"appkit": ">=1.0.0 <2.0.0"` as a `peerDependency` (`APP-DESIGN.md` §12) rather than bundling it, for the same reason `react` and `@tanstack/react-query` are peer deps: npm can't dedupe two different `github:org/appkit#vX:frontend` specs into one copy, and two copies means two separate React contexts — `useApiClient` would silently return `null` in half the tree. So the host installs it once, explicitly, at the highest version any installed app's peer range requires:
+3. **Install `appkit`'s frontend half, if this is the first app being installed.** Every SDK declares `"appkit": ">=1.0.0 <2.0.0"` as a `peerDependency` (`APP-DESIGN.md` §12) rather than bundling it, for the same reason `react` and `@tanstack/react-query` are peer deps: npm can't dedupe two different `github:org/appkit#vX::path:frontend` specs into one copy, and two copies means two separate React contexts — `useApiClient` would silently return `null` in half the tree. So the host installs it once, explicitly, at the highest version any installed app's peer range requires:
    ```bash
    cd frontend
-   npm install "github:yourorg/appkit#v1.2.0:frontend"
+   npm install "github:yourorg/appkit#v1.2.0::path:frontend"
    ```
    Already installed and satisfies every app's peer range? Skip this step.
 
+   **`::path:frontend`, not `:frontend`.** appkit's own README documents the single-colon
+   form (`#vX.Y.Z:frontend`) — confirmed broken against `npm-package-arg`: it silently
+   drops both the tag and the subdirectory, installing the repo's private root package
+   instead of the versioned frontend package. `::path:` is npm's real subdirectory syntax.
+   Even with the right syntax, verify the install actually resolved
+   (`node -e "import('appkit').then(m => console.log(Object.keys(m)))"` from `frontend/`) —
+   this scaffold's own appkit v1.0.0 integration hit a second, deeper packaging defect
+   where even the corrected syntax installed the wrong tree in one tested environment; see
+   `frontend/vendor/README.md` for the full writeup and the fallback that unblocked it.
+
 4. **Install the frontend half at the same tag:**
    ```bash
-   npm install "github:yourorg/notifications-app#v1.4.2:frontend"
+   npm install "github:yourorg/notifications-app#v1.4.2::path:frontend"
    ```
-   The tags must match. A mismatched pair is the single most likely cause of "the hook returns `undefined` for a field the API clearly sends."
+   The tags must match. A mismatched pair is the single most likely cause of "the hook returns `undefined` for a field the API clearly sends." Verify this install resolved too, the same way as step 3.
 
 5. **Copy the configuration block from the app's `README.md`** into `backend/config/settings.py` — `INSTALLED_APPS`, `MIDDLEWARE` (if any), its `REST_FRAMEWORK['DEFAULT_THROTTLE_RATES']` entries, and its settings dict (e.g. `NOTIFICATIONS = {...}`). Copy it verbatim; do not write these from memory or infer them from the package's source. Only adapt naming if there's a real collision, and if there is, note it in `CLAUDE.md` (§8) because it becomes a permanent local deviation.
 
@@ -179,7 +189,7 @@ Skipping steps or reordering them produces confusing failures — running `migra
 
 ```bash
 cd backend  && uv add "git+https://github.com/yourorg/notifications-app.git@v1.5.0#subdirectory=backend" --upgrade
-cd ../frontend && npm install "github:yourorg/notifications-app#v1.5.0:frontend"
+cd ../frontend && npm install "github:yourorg/notifications-app#v1.5.0::path:frontend"
 ```
 
 Then, in order: read the app's `CHANGELOG.md` for the range you're crossing and act on **every "Host action:" line**; **check whether the new version raised its `appkit` peer/dependency range** (`APP-DESIGN.md` §1.1, §12) — if it did, upgrade `appkit` itself first, on both halves, before re-running `uv sync`/`npm install` for this app; re-copy any changed README config blocks; check whether any signal payload or service signature changed (a major bump means at least one did, and your `core/` receivers may need updating); `migrate`; `docker compose up --build`; run `make check`; update the version in `CLAUDE.md`.
@@ -383,9 +393,9 @@ This is a normal `pytest` suite (`make test`). CI runs it (`BASE-DESIGN.md` §7)
 
 ## 6. Shared Utilities & Cross-Cutting Concerns
 
-`backend/tools/` is project-owned and exists for **`config/` and `core/` code** — not for installed app packages, which can't assume a specific host's internals exist. What used to live here and be duplicated by every app (`APP-DESIGN.md` §4) now has a real home: `appkit`, a declared, versioned dependency every app depends on explicitly (`APP-DESIGN.md` §1.1). `frontend/lib/query-client.ts` and `appkit`'s `ApiClientProvider` are the two things an installed SDK is allowed to assume exist (`APP-DESIGN.md` §12) — one a host convention, one a declared peer dependency — anything else in `frontend/lib/` is for the host's own pages and components.
+`backend/tools/` is project-owned and exists for **`config/` and `core/` code** — not for installed app packages, which can't assume a specific host's internals exist. What used to live here and be duplicated by every app (`APP-DESIGN.md` §4) now has a real home: `appkit`, a declared, versioned dependency every app depends on explicitly (`APP-DESIGN.md` §1.1). appkit's own `ApiClientProvider`/`useApiClient`/`makeQueryClient` are what an installed SDK is allowed to assume exist (`APP-DESIGN.md` §12) — `frontend/lib/query-client.ts` no longer exists as a separate host convention; the scaffold's own `frontend/app/providers.tsx` calls `makeQueryClient()` straight from `appkit`. `frontend/lib/api-client.ts` (the host's concrete `HttpClient` implementation, injected into `ApiClientProvider`) is the one thing left in `frontend/lib/` for the host's own pages and components to share.
 
-- `tools/crypto.py` — wraps the project's `FERNET_KEY` for field-level encryption in project-owned models: `from tools.crypto import encrypt, decrypt`. If an *app* needs encryption internally, that's the app's own concern with its own documented `.env` key — never the host's `tools.crypto`.
+- `tools/crypto.py` — wraps the project's `FERNET_KEY` for field-level encryption in project-owned models: `from tools.crypto import encrypt, decrypt`. Internally a thin wrapper over `appkit.crypto.Cipher` (requires the `crypto` extra — `appkit[crypto]`) built from `FERNET_KEY`; appkit's `Cipher` itself reads no setting or env var of its own, by design. If an *app* needs encryption internally, that's the app's own concern with its own documented `.env` key and its own `Cipher` — never the host's `tools.crypto`.
 - `appkit.cache` / `appkit.mixins` — the caching helpers and `CachedListMixin`, shared with every installed app rather than duplicated per app or reimplemented in `tools/`.
 - `appkit.exceptions` — the error-envelope handler, wired as `REST_FRAMEWORK["EXCEPTION_HANDLER"]`.
 - `appkit.request_id` — the request-ID `ContextVar`, middleware, and logging filter; `config/logging.py`'s `build_logging_config()` imports the filter from here.

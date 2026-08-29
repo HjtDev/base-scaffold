@@ -33,6 +33,7 @@ update it here and in every file it's baked into (`.python-version`, Docker base
 | Sentry | Included by default, wired to `SENTRY_DSN`; empty by default so it's inert in dev/CI and active the moment a DSN is set |
 | Placeholder project name | `myproject` — what `scripts/rename-project.sh` replaces in `.env.example`, `docker-compose*.yml`, `CLAUDE.md`, `pyproject.toml`, `package.json` |
 | GitHub org | Stays the `{{ORG}}` placeholder in this repo (`CLAUDE.md.template`, install commands). A cloned project fills in its real org — install commands (`uv add git+https://github.com/<org>/...`) don't work otherwise |
+| appkit | v1.0.0 — app package #1, the shared dependency every other app declares (`APP-DESIGN.md` §1.1). Backend: `appkit[crypto]`, pinned via `[tool.uv.sources]` in `backend/pyproject.toml`. Frontend: currently `frontend/vendor/appkit-1.0.0.tgz` (see that directory's `README.md`) — appkit's documented `github:…#vX.Y.Z:frontend` npm install command is confirmed broken (drops the tag and subdirectory silently); re-pin to a real git install once fixed upstream |
 
 ## Non-negotiables for this repo
 - `uv` only. No `requirements.txt`, no `pip install`, anywhere, ever.

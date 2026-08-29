@@ -83,12 +83,15 @@ my-client-project/
 │   ├── app/
 │   │   ├── layout.tsx               # mounts QueryClientProvider
 │   │   ├── page.tsx                 # placeholder — calls /healthz/, shows backend status
-│   │   ├── providers.tsx            # client-component wrapper for layout.tsx's providers
+│   │   ├── providers.tsx            # mounts QueryClientProvider + appkit's ApiClientProvider
 │   │   └── api/health/route.ts      # frontend healthcheck target, see §8.2
 │   ├── lib/
-│   │   ├── query-client.ts          # shared TanStack Query client — every installed
-│   │   │                              frontend app-package SDK plugs into this
-│   │   └── api-client.ts            # shared fetcher: base URL, credentials, error shape
+│   │   └── api-client.ts            # shared fetcher: base URL, credentials, appkit's
+│   │                                  HttpClient/envelope helpers — see §3. makeQueryClient
+│   │                                  itself now comes straight from appkit (no local copy)
+│   ├── vendor/                      # [temporary — see vendor/README.md] appkit's frontend
+│   │                                  half, packed from source; not the documented install
+│   │                                  path — a confirmed appkit packaging defect blocks it
 │   ├── tests/                       # vitest — at least one real test per lib/ module
 │   └── public/
 └── backend/
@@ -118,11 +121,11 @@ my-client-project/
     │   ├── views/                   # subclasses/overrides of an installed app's views
     │   └── tests/                   # tests for signals, services, view overrides, plus
     │       └── conftest.py          #   cross-app fixtures using installed apps' factories
-    ├── tools/                       # shared utilities — mixins.py, cache.py, crypto.py
-    │   │                              (§3 has a forward note: mixins.py/cache.py are
-    │   │                              slated to move into the appkit app package once
-    │   │                              it ships — not yet true of this repo)
-    │   └── tests/                   # crypto round-trip, cache helper, mixins' error shape
+    ├── tools/                       # host-owned helpers only — see §3's "The tools/ vs
+    │   │                              appkit boundary". crypto.py wraps FERNET_KEY;
+    │   │                              caching, the error envelope, and request-ID
+    │   │                              correlation moved to the appkit app package
+    │   └── tests/                   # crypto round-trip only — see §3
     ├── templates/                   # override point for an installed app's templates
     └── locale/
 ```
@@ -140,41 +143,47 @@ Two additions to the tree worth explaining:
 
 - **Django 6 on ASGI**, served by Uvicorn (not Gunicorn/WSGI). `uvicorn[standard]` already speaks WebSocket and works fine with Channels if a project needs one later — see "WebSockets" below. `daphne` is the reference ASGI server in Channels' own docs, not a requirement.
 - **Django REST Framework + `drf-spectacular`** for the API and its OpenAPI/Swagger schema.
+- **`appkit`** — app package #1, the shared dependency every other installed app declares
+  (`APP-DESIGN.md` §1.1), installed here regardless of whether any *other* app is
+  installed yet. Owns caching helpers, the DRF error envelope, request-ID correlation, DRF
+  pagination/permissions/throttling helpers, and the frontend `HttpClient`
+  interface/`ApiClientProvider` pair — see "The `tools/` vs `appkit` boundary" below for
+  exactly what moved here versus what a host keeps. Full detail: `INTEGRATION-GUIDE.md` §2.
 - **Postgres 17** as the only supported database, in dev, test, and prod. No SQLite anywhere, including tests — see §5.3.
 - **Celery + Redis** for background jobs needing chaining, retries, or scheduling, with `django-celery-beat`'s `DatabaseScheduler` for periodic tasks (see §6); Django's native `django.tasks` framework for simple one-off jobs (single email, single notification) that don't need Celery's overhead.
 - **`django-jazzmin`** for the admin theme, configured via `JAZZMIN_SETTINGS` in `config/settings.py`.
 - **`django-cors-headers`, `whitenoise`**, preconfigured.
 - **Email**, env-driven via `EMAIL_BACKEND`/`EMAIL_HOST`/`EMAIL_PORT`/`EMAIL_HOST_USER`/`EMAIL_HOST_PASSWORD`/`EMAIL_USE_TLS`/`DEFAULT_FROM_EMAIL` in `config/settings.py`. Code default is the SMTP backend pointed at `mailpit` (the dev-only tooling-profile container, §8.2); `backend/.env.example` ships the console backend live instead, since a plain `docker compose up` (no `--profile tooling`) has no `mailpit` host for the code default to resolve. `config/checks.py`'s `config.E004` fails loudly if `DEBUG=False` and `EMAIL_HOST` is still empty or `mailpit` — the one prod trap a dev-correct code default creates.
-- **Logging split by environment** — `config/logging.py` returns a colored, human-readable console config when `DEBUG` is on and a `structlog`-based JSON config when it isn't. This is deliberate: JSON in dev is unreadable to a person, and colored text in prod is unparseable by any log aggregator, so a single config is wrong in one environment no matter which you pick. Both configs include a request ID so a single request's log lines can be correlated — the `ContextVar`, the request-ID middleware, and the `logging.Filter` that reads it all live in `config/logging.py` alongside `build_logging_config()`, since all three exist only to serve it. This needs no new dependency: `contextvars` and `logging.Filter` are both stdlib. *(Forward note — not yet true of this repo: once `appkit` v1.0.0 ships, these three move into `appkit.request_id` and `config/logging.py` imports them back; see "The `tools/` vs `appkit` boundary" below.)*
+- **Logging split by environment** — `config/logging.py` returns a colored, human-readable console config when `DEBUG` is on and a `structlog`-based JSON config when it isn't. This is deliberate: JSON in dev is unreadable to a person, and colored text in prod is unparseable by any log aggregator, so a single config is wrong in one environment no matter which you pick. Both configs include a request ID so a single request's log lines can be correlated — `build_logging_config()` and the structlog processor that stamps it stay here, since the console-vs-JSON choice is host policy; the `ContextVar`, the request-ID middleware, and the `logging.Filter` that reads it live in `appkit.request_id` (see "The `tools/` vs `appkit` boundary" below), imported back into `config/logging.py`'s `LOGGING` dict.
 
-  The request-ID middleware is a raw, non-`MiddlewareMixin` async-only class (`async_capable = True`, `sync_capable = False`, `async def __call__`). Those two class attributes only tell Django's `load_middleware` how to build *that* middleware's own wrapper — they say nothing to `inspect.iscoroutinefunction(instance)`, the separate check any *other* middleware wrapping it (e.g. `SecurityMiddleware`) uses to decide whether to `await` it. `MiddlewareMixin`-based middleware calls `inspect.markcoroutinefunction(self)` internally to make itself visible to that check; a raw async-only middleware class has to do the same in its own `__init__`, or every outer middleware calls it without awaiting and crashes on the returned coroutine — confirmed empirically: omitting the call broke every real request (ASGI and WSGI both) until fixed. Any future raw async middleware added to `core/` or `config/` needs this same `markcoroutinefunction(self)` call.
+  `appkit.request_id.RequestIDMiddleware` is a raw, non-`MiddlewareMixin` async-only class (`async_capable = True`, `sync_capable = False`, `async def __call__`). Those two class attributes only tell Django's `load_middleware` how to build *that* middleware's own wrapper — they say nothing to `inspect.iscoroutinefunction(instance)`, the separate check any *other* middleware wrapping it (e.g. `SecurityMiddleware`) uses to decide whether to `await` it. `MiddlewareMixin`-based middleware calls `inspect.markcoroutinefunction(self)` internally to make itself visible to that check; a raw async-only middleware class has to do the same in its own `__init__`, or every outer middleware calls it without awaiting and crashes on the returned coroutine. Any future raw async middleware added to `core/` or `config/` needs this same `markcoroutinefunction(self)` call — appkit's own already does.
 - **Sentry**, initialized in `config/settings.py` behind a `SENTRY_DSN` env var that's empty by default (so it's inert locally and in CI, active the moment a DSN is set). This is included rather than left out because the combination of Celery workers, ASGI concurrency, and N installed third-party app packages makes "an exception happened somewhere and nobody knew" the default failure mode otherwise. Wire the Django, Celery, and Redis integrations, and set `traces_sample_rate` low (0.1) rather than off, so slow-endpoint data exists when someone asks.
-- **`tools/`** — `mixins.py` (shared DRF mixins/error formats), `cache.py` (caching helpers), `crypto.py` (wraps a `Fernet` cipher built from `FERNET_KEY` in `.env`). These exist for `config/` and `core/` to use — see `INTEGRATION-GUIDE.md` §6 for why installed app packages don't reach into this folder.
+- **`tools/`** — host-owned helpers only, for `config/` and `core/` to use; see `INTEGRATION-GUIDE.md` §6 for why installed app packages don't reach into this folder. As of the appkit v1.0.0 integration this holds only `crypto.py`, a thin wrapper over `appkit.crypto.Cipher` built from `FERNET_KEY` in `.env` — appkit's `Cipher` takes its key as a constructor argument and reads no Django setting or env var of its own, so *something* has to own reading `FERNET_KEY`, permanently. Caching, the DRF error envelope, and request-ID correlation all moved to `appkit` — see the boundary rule directly below.
 
-  `tools/mixins.py`'s `standard_exception_handler` is wired as `REST_FRAMEWORK["EXCEPTION_HANDLER"]`, so every DRF-raised error — not only views that opt into a mixin — renders in one envelope:
+  `appkit.exceptions.standard_exception_handler` is wired as `REST_FRAMEWORK["EXCEPTION_HANDLER"]` in `config/settings.py`, so every DRF-raised error — not only views that opt into a mixin — renders in one envelope:
 
   ```json
   {"error": {"code": "validation_error", "message": "...", "details": {}, "request_id": "..."}}
   ```
 
-  `details` is always present (`{}` when nothing is field-level, so a client never has to branch on whether the key exists). `request_id` is the same correlation ID `config/logging.py` stamps on every log line. `code` is a stable, machine-readable string clients branch on — adding one is a minor change, renaming one is breaking. The full set: `validation_error`, `parse_error`, `not_authenticated`, `authentication_failed`, `permission_denied`, `not_found`, `method_not_allowed`, `throttled`, `server_error`. An unhandled exception is logged (`logger.exception`) before being turned into a `server_error` envelope, so it still reaches Sentry; `message` on a `server_error` is generic with `DEBUG` off and carries the real exception text with it on. Headers DRF already sets — `Retry-After` on `throttled`, `WWW-Authenticate` on `not_authenticated` — are untouched, since the handler rewrites only `response.data`. This is the shape `APP-DESIGN.md` §4 asks every installed app package to bundle an equivalent of *today* — see the forward note directly below for how that changes.
+  `details` is always present (`{}` when nothing is field-level, so a client never has to branch on whether the key exists). `request_id` is the same correlation ID `config/logging.py` stamps on every log line, via `appkit.request_id.request_id_var`. `code` is a stable, machine-readable string clients branch on — adding one is a minor change, renaming one is breaking. The full set is **ten** values, not nine — `"error"` is a documented catch-all in its own right (covering any `APIException` that isn't one of the other nine), not an omission: `validation_error`, `parse_error`, `not_authenticated`, `authentication_failed`, `permission_denied`, `not_found`, `method_not_allowed`, `throttled`, `server_error`, `error`. An unhandled exception is logged (`logger.exception`) before being turned into a `server_error` envelope, so it still reaches Sentry; `message` on a `server_error` is generic with `DEBUG` off and carries the real exception text with it on. Headers DRF already sets — `Retry-After` on `throttled`, `WWW-Authenticate` on `not_authenticated` — are untouched, since the handler rewrites only `response.data`. This is the shape `APP-DESIGN.md` §4 asks every installed app package to bundle an equivalent of.
 
-  #### Forward note: the planned `tools/` vs `appkit` boundary
+  #### The `tools/` vs `appkit` boundary
 
-  **Not yet true of this repo — this subsection describes a target state, not current fact.** As of today `appkit` doesn't exist, `backend/tools/` contains all three modules above (`mixins.py`, `cache.py`, `crypto.py`), and `config/logging.py` owns the request-ID `ContextVar`/middleware/filter outright, exactly as described above and in the "Logging split by environment" bullet. `APP-DESIGN.md` §1.1 establishes `appkit` as a *future* shared app package every app will depend on explicitly (`BASE-DESIGN.md` §11.2 has the build order: `appkit` is app package #1, built before any app that depends on it exists). Once `appkit` v1.0.0 ships, the boundary below is what a follow-up change to this scaffold's actual code applies — this table is written now so that follow-up isn't guessing at the design later.
+  > **Does an app package need a given helper to behave correctly in any host?** If yes, it belongs in `appkit`. If it depends on host configuration — a host `.env` key, a host setting, a host policy decision — it belongs in `backend/tools/`.
 
-  > **Once `appkit` exists: does an app package need a given helper to behave correctly in any host?** If yes, it moves to `appkit`. If it depends on host configuration — a host `.env` key, a host setting, a host policy decision — it stays in `backend/tools/`.
-
-  | Helper | Where (once `appkit` ships) | Why |
+  | Helper | Where | Why |
   |---|---|---|
-  | `build_cache_key`, `cached_call`, `invalidate_namespace`, `namespace_version` | moves to `appkit.cache` | Pure functions over Django's cache API. No host config involved. |
-  | `CachedListMixin` | moves to `appkit.mixins` | Built on the above; every app's list views need it. |
-  | `standard_exception_handler` + the nine error codes | moves to `appkit.exceptions` | The envelope is an ecosystem-wide contract, not host policy — one definition, or different apps' clients see two different shapes for the same kind of error. |
-  | `request_id_var`, `RequestIDMiddleware`, `RequestIDFilter` | moves to `appkit.request_id` | The envelope carries `request_id`; an app logging from its own `services.py` has to stamp the same correlation ID the host's views use, which only works if both import the same `ContextVar` object. |
-  | `encrypt`/`decrypt` (`tools/crypto.py`) | **stays in `tools/`, permanently** | Wraps the host's own `FERNET_KEY`. An app needing encryption uses its own documented `.env` key and its own cipher — never the host's `tools.crypto` — exactly as this module's own docstring already says. |
+  | `build_cache_key`, `cached_call`, `invalidate_namespace`, `namespace_version` | `appkit.cache` | Pure functions over Django's cache API. No host config involved. |
+  | `CachedListMixin` | `appkit.mixins` | Built on the above; every app's list views need it. `cache_namespace` has no class-name fallback here — it's required, raising `ImproperlyConfigured` if left empty (the scaffold's own pre-appkit version of this mixin had that fallback, which was a bug: two apps each shipping a same-named list view would silently share cache entries in the host's one Redis). |
+  | `standard_exception_handler` + the ten error codes | `appkit.exceptions` | The envelope is an ecosystem-wide contract, not host policy — one definition, or different apps' clients see two different shapes for the same kind of error. |
+  | `request_id_var`, `RequestIDMiddleware`, `RequestIDFilter` | `appkit.request_id` | The envelope carries `request_id`; an app logging from its own `services.py` has to stamp the same correlation ID the host's views use, which only works if both import the same `ContextVar` object. |
+  | `encrypt`/`decrypt` (`tools/crypto.py`) | **stays in `tools/`, permanently** | Wraps the host's own `FERNET_KEY`. An app needing encryption uses its own documented `.env` key and its own cipher (`appkit.crypto.Cipher`, requiring the `crypto` extra) — never the host's `tools.crypto`. |
   | `build_logging_config()`, the structlog `_add_request_id` processor | **stays in `config/logging.py`, permanently** | The dev-console-vs-prod-JSON choice is host policy, not something an app package has any business deciding. |
 
-  **Naming-collision note, relevant once `appkit` exists.** `backend/tools/` (host-owned, never importable by an app package) and `appkit` (shared, always importable by an app package) will be adjacent concepts with opposite rules — the exact kind of thing that's easy to get backwards under time pressure. The package is named `appkit`, not `tools-app`, specifically so the import line makes the ownership obvious at a glance: `from tools.crypto import encrypt` (host-only) reads nothing like `from appkit.cache import build_cache_key` (shared), where a name like `tools_app` would sit one character from `tools` in a tree where the two have opposite ownership rules.
+  **Naming-collision note.** `backend/tools/` (host-owned, never importable by an app package) and `appkit` (shared, always importable by an app package — and explicitly exempt from the `banned-api` rule that keeps other app packages out of `core/`/`config/`, `INTEGRATION-GUIDE.md` §2 step 10) are adjacent concepts with opposite rules — the exact kind of thing that's easy to get backwards under time pressure. The package is named `appkit`, not `tools-app`, specifically so the import line makes the ownership obvious at a glance: `from tools.crypto import encrypt` (host-only) reads nothing like `from appkit.cache import build_cache_key` (shared), where a name like `tools_app` would sit one character from `tools` in a tree where the two have opposite ownership rules.
+
+  **Three settings describe the same physical proxy-hop count and must be changed together**: `APPKIT["TRUSTED_PROXY_COUNT"]` and `REST_FRAMEWORK["NUM_PROXIES"]` in `config/settings.py`, and `UVICORN_FORWARDED_ALLOW_IPS` in `docker-compose.prod.yml`. `appkit.net.client_ip` reads the first; DRF's own `SimpleRateThrottle.get_ident()` (used by `ScopedRateThrottle`) reads the second — appkit's `client_ip` can't be injected into DRF's throttle ident logic, so this has to be set independently, or a throttled view keys off the client's own spoofable leftmost `X-Forwarded-For` entry instead of the trusted, proxy-appended one; uvicorn's `--proxy-headers` reads the third to decide which hosts it trusts to set `X-Forwarded-For`/`X-Forwarded-Proto` at all. Nothing currently checks that these three agree — a host that adds a CDN in front of nginx and updates only one silently gets a spoofable throttle bucket or a wrong `client_ip`, with no error anywhere. This is a reported appkit defect (a proposed `appkit.W006` system check); until it exists, this paragraph is the only thing enforcing the link.
 - **Frontend baseline** — Next.js App Router (TypeScript, `strict`) with `@tanstack/react-query` and a shared API client already set up in `frontend/lib/`, so an installed frontend app-package's hooks have a consistent client to plug into out of the box instead of every app package bootstrapping its own.
 - **Analytics (optional)** — self-hosted [Umami](https://umami.is), `umami` + its own `umami-db` Postgres instance, behind the dev-only `analytics` compose profile (§8.2), same pattern as the `tooling` profile's `flower`/`mailpit`. Off by default: a plain `docker compose up` never starts it, and with `NEXT_PUBLIC_UMAMI_WEBSITE_ID` unset `frontend/app/layout.tsx` renders no script tag. `NEXT_PUBLIC_UMAMI_SCRIPT_URL`/`NEXT_PUBLIC_UMAMI_WEBSITE_ID` are frontend build ARGs, same build-time-only caveat as `NEXT_PUBLIC_API_URL` (§8.1). See `README.md`'s "Analytics (optional)" section for enabling it and the admin-password warning — Umami's default `admin`/`umami` login cannot be overridden by env.
 
@@ -303,10 +312,15 @@ dependencies = [
     "python-decouple>=3.8,<4.0",
     "whitenoise>=6.8,<7.0",
     "uvicorn[standard]>=0.34,<1.0",
+    # Deliberately redundant with appkit[crypto]'s own `cryptography` dependency below:
+    # tools/crypto.py wraps appkit.crypto.Cipher rather than importing `cryptography`
+    # directly, but FERNET_KEY is a first-class, always-required env var (config/settings.py)
+    # and shouldn't depend on an app's extras selection to keep working.
     "cryptography>=50,<51",
     "structlog>=25,<26",
     "sentry-sdk[django,celery]>=2.20,<3.0",
     # ---- installed app packages get appended here by `uv add`, one line each
+    "appkit[crypto]>=1.0,<2.0",
 ]
 
 [dependency-groups]
@@ -340,13 +354,21 @@ meant to be the production image. `backend/Dockerfile.prod`'s builder stage uses
 the list. See §8.1 for the Dockerfile block.
 
 ```toml
+[tool.uv.sources]
+# appkit isn't published to a package index — this is the one-time wiring every host needs
+# the first time ANY app package is installed (appkit resolves transitively), not repeated
+# per app after that. Bump the tag only when deliberately upgrading appkit itself — see
+# INTEGRATION-GUIDE.md §2.1.
+appkit = { git = "https://github.com/{{ORG}}/appkit.git", tag = "v1.0.0", subdirectory = "backend" }
+
 # Uncomment ONE of these blocks while developing an app package against this project.
 # Swap it back to the pinned git ref before committing — see INTEGRATION-GUIDE.md §7.
-# [tool.uv.sources]
 # notifications-app = { path = "../notifications-app/backend", editable = true }
 ```
 
-Ruff, mypy, pytest and coverage config live in this same file — see §5. The `[tool.uv.sources]` comment block is load-bearing documentation: it's the sanctioned way to point a host at a local app checkout, and having it present-but-commented is what stops someone inventing a worse method.
+Ruff, mypy, pytest and coverage config live in this same file — see §5. The commented local-checkout block under `[tool.uv.sources]` is load-bearing documentation: it's the sanctioned way to point a host at a local app checkout, and having it present-but-commented is what stops someone inventing a worse method.
+
+**Extras: this scaffold takes `appkit[crypto]`, not `appkit[images]`.** The scaffold ships `FERNET_KEY` and `tools/crypto.py` — exactly the case the `crypto` extra exists for (`appkit.crypto.Cipher`/`generate_key`). It accepts no file uploads of its own, so `appkit.files.validate_image`'s raster-format checks (the `images` extra) have nothing to validate here; an app that accepts uploads declares `appkit[images]` itself.
 
 ### 4.3 Settings & environment
 
@@ -432,7 +454,7 @@ Five `.env` files, each with a tracked `.example`, and a clear rule about which 
 | File | Scope | Committed? |
 |---|---|---|
 | `.env` | Compose-level interpolation only — `PROJECT_NAME`, host ports | No (`.env.example` is) |
-| `.env.prod` | Same scope, production values (`PROJECT_NAME`, `NEXT_PUBLIC_API_URL`, host ports, `UVICORN_WORKERS`) — required by `docker-compose.prod.yml`'s `PROJECT_NAME:?` guard and passed via `--env-file` (§9) | No — **lives only on the server**, never synced |
+| `.env.prod` | Same scope, production values (`PROJECT_NAME`, `NEXT_PUBLIC_API_URL`, host ports, `UVICORN_WORKERS`, `UVICORN_FORWARDED_ALLOW_IPS`) — required by `docker-compose.prod.yml`'s `PROJECT_NAME:?` guard and passed via `--env-file` (§9) | No — **lives only on the server**, never synced |
 | `backend/.env` | Django dev settings, DB creds, Redis URL, app package keys | No (`.env.example` is) |
 | `backend/.env.prod` | Same keys, production values | No — **lives only on the server**, never synced |
 | `frontend/.env.local` | `NEXT_PUBLIC_API_URL` and friends | No |
@@ -480,7 +502,7 @@ pythonpath = ["."]
 testpaths = ["core/tests", "config/tests", "tools/tests"]
 python_files = ["test_*.py"]
 addopts = """
-  -ra --strict-markers --strict-config
+  -ra --strict-markers --strict-config -p appkit.testing
   --cov=core --cov=tools --cov=config
   --cov-report=term-missing --cov-fail-under=80
 """
@@ -493,12 +515,16 @@ filterwarnings = ["error::DeprecationWarning"]
 
 **`testpaths` deliberately excludes installed app packages.** An app's own suite is its own repo's CI gate (`APP-DESIGN.md` §10); re-running it here would test third-party code you can't fix from this repo and would slow every local run. What this project tests is *its own* code — `core/`, `tools/`, `config/` — which is exactly the code no app's test suite covers.
 
+**`-p appkit.testing` is enabled scaffold-wide**, not left for each installed app to opt into separately. appkit's own plugin is opt-in by design (its README: auto-loading would inject its fixtures into every consuming app's namespace whether asked for or not) — but at the *host* level that reasoning doesn't apply, since the host is the one place already reading and writing `core/tests/conftest.py`/`backend/conftest.py` directly. Confirmed empirically before enabling it: every fixture the plugin registers (`appkit_api_client`, `appkit_user`, `appkit_admin_user`, `appkit_auth_client`, `appkit_admin_client`, `appkit_frozen_request_id`, `appkit_clear_cache`) is a lazy `@pytest.fixture` — nothing executes at plugin-load time, so it collects cleanly even in a fresh scaffold with no auth app installed and no custom user model. `appkit_user`/`appkit_admin_user` build through `get_user_model().USERNAME_FIELD` reflectively, so they work against the scaffold's default `django.contrib.auth` user today and against a future auth app's custom user model with no changes here. Measured load-cost delta running this suite with and without the flag: noise-level (~7.8s either way over three runs each) — not a reason to reconsider.
+
 Fixture hierarchy:
 
 ```
-backend/conftest.py                # project-wide: api_client, user, admin_user, auth_client
+backend/conftest.py                # empty — see its own docstring; use appkit_* fixtures
 backend/core/tests/conftest.py     # cross-app fixtures — a seeded cart + payment, etc.
 ```
+
+`backend/conftest.py` used to define `api_client`/`user`/`admin_user`/`auth_client` directly; those were deleted in the appkit v1.0.0 integration in favor of the `appkit_`-prefixed equivalents above. Two reasons beyond "don't maintain two copies of the same fixture": appkit's versions are reflective (work against any user model, not a hardcoded `username=` call), and the scaffold's own `admin_user` collided by name with a fixture pytest-django ships natively — verified directly, pytest-django's version wins that collision **silently**, the exact hazard appkit's `appkit_` prefix exists to prevent. Keeping a same-named local fixture only recreates that ambiguity one file away instead of removing it.
 
 Cross-app fixtures are where installed apps' `factories.py` (`APP-DESIGN.md` §7.3) earns its place:
 
@@ -510,11 +536,11 @@ from payments_app.factories import PaymentMethodFactory
 
 
 @pytest.fixture
-def checkout_ready_user(user):
-    cart = CartFactory(user=user)
+def checkout_ready_user(appkit_user):
+    cart = CartFactory(user=appkit_user)
     CartItemFactory.create_batch(3, cart=cart)
-    PaymentMethodFactory(user=user, is_default=True)
-    return user
+    PaymentMethodFactory(user=appkit_user, is_default=True)
+    return appkit_user
 ```
 
 Importing another app's factories from `core/tests/` is sanctioned and expected; importing them from `core/services/` or any other production code is a bug.
@@ -763,17 +789,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
-      # backend/Dockerfile.prod mounts --mount=type=ssh on its uv sync layers, to support
-      # private git app-package refs without ever putting a credential in a layer
-      # (APP-DESIGN.md §1.2). BuildKit treats that mount as optional by default, so it builds
-      # fine with no agent today. The moment this project installs its first private app
-      # package, add a webfactory/ssh-agent (or equivalent) step here loading a deploy key,
-      # and pass --ssh default on the buildx call below — see INTEGRATION-GUIDE.md §2.
+      # backend/Dockerfile.prod and frontend/Dockerfile.prod both mount --mount=type=ssh on
+      # their dependency-install layers (uv sync / npm ci), to support a private
+      # app-package repo's git ref without ever putting a credential in a layer
+      # (APP-DESIGN.md §1.2) — appkit itself (HjtDev/appkit, private) is that repo as of
+      # this scaffold's appkit v1.0.0 integration. Add a deploy key with read access to
+      # every private app-package repo this project installs as the APPKIT_DEPLOY_KEY
+      # secret; rename it if the project's private repos outgrow one key.
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.APPKIT_DEPLOY_KEY }}
       - name: Build production images (proves the prod path still builds)
         run: |
-          docker buildx build -f backend/Dockerfile.prod backend --load -t app-backend:ci
+          docker buildx build -f backend/Dockerfile.prod backend --load -t app-backend:ci --ssh default
           docker buildx build -f frontend/Dockerfile.prod frontend --load -t app-frontend:ci \
-            --build-arg NEXT_PUBLIC_API_URL=http://localhost:8000
+            --ssh default --build-arg NEXT_PUBLIC_API_URL=http://localhost:8000
       - name: Smoke-test the backend image boots
         run: |
           docker run --rm app-backend:ci python -c "import django; print(django.get_version())"
@@ -915,17 +945,21 @@ USER appuser
 EXPOSE 8000
 # No --workers flag: uvicorn's CLI reads it natively from $UVICORN_WORKERS (click
 # auto_envvar_prefix="UVICORN"), so a compose-level `environment: UVICORN_WORKERS: 3`
-# is enough — no shell, no entrypoint script, and exec form keeps "*" below literal.
+# is enough — no shell, no entrypoint script needed. --forwarded-allow-ips is set the
+# same way, via $UVICORN_FORWARDED_ALLOW_IPS — not hardcoded here as "*", which would
+# make uvicorn trust the client-controlled LEFTMOST X-Forwarded-For entry rather than
+# nginx's appended one (verified against uvicorn's own ProxyHeadersMiddleware — see §3's
+# "three settings describe the same physical proxy-hop count" paragraph).
 CMD ["uvicorn", "config.asgi:application", \
      "--host", "0.0.0.0", "--port", "8000", \
-     "--proxy-headers", "--forwarded-allow-ips", "*"]
+     "--proxy-headers"]
 ```
 
 Notes on the deliberate choices:
 - **`git` is installed in the builder only** — it's needed to resolve the `git+https://…` app package refs, and it has no business being in the runtime image.
 - **`--mount=type=ssh`** supports private app package repos without ever putting a credential in a layer (see `APP-DESIGN.md` §1.2). Build with `docker buildx build --ssh default`, or swap to `--mount=type=secret,id=gh_token` for the token flow.
 - **No migrate on boot.** See §9 for why that's a deploy-script step.
-- **`--proxy-headers`** matters because prod binds to `127.0.0.1` behind nginx; without it every client IP in your logs is the proxy's.
+- **`--proxy-headers`** matters because prod binds to `127.0.0.1` behind nginx; without it every client IP in your logs is the proxy's. Its companion, `--forwarded-allow-ips`, is deliberately NOT baked into this image — see the CMD comment above and §3.
 - **Base image digests are pinned automatically**, not as a manual step: `renovate.json` sets `pinDigests: true`, so Renovate opens a PR converting `python:3.14-slim` (and every other base image in the repo — both frontend Dockerfiles, `ghcr.io/astral-sh/uv:0.11`, the compose service images) to `python:3.14-slim@sha256:…` shortly after this workflow first runs, and keeps the digest current from then on. Reproducibility is the whole point of the prod image; a floating tag quietly undermines it. The trade-off — a base image only gets security patches via a Renovate PR, not silently on rebuild — is acceptable only because Renovate is actually running; a project that disables it should drop the digest pins too, or it sits on a frozen image indefinitely.
 - **Worker count** comes from `$UVICORN_WORKERS`, uvicorn's own env var, set per-environment in compose rather than hardcoded — so the same image runs correctly on a 2-core VPS and a 16-core box.
 
@@ -965,7 +999,12 @@ Dev stays single-stage on purpose: with the source bind-mounted, a builder stage
 FROM node:24-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN --mount=type=cache,target=/root/.npm npm ci
+# vendor/ before npm ci: a package.json "file:./vendor/..." dependency (appkit's frontend
+# half, currently — see frontend/vendor/README.md) must exist in the build context before
+# npm resolves it. --mount=type=ssh supports a private app-package repo's frontend half
+# with no credential baked into any layer, same reasoning as the backend Dockerfile above.
+COPY vendor ./vendor
+RUN --mount=type=cache,target=/root/.npm --mount=type=ssh npm ci
 
 FROM node:24-alpine AS builder
 WORKDIR /app
@@ -1001,7 +1040,8 @@ FROM node:24-alpine
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY package.json package-lock.json ./
-RUN --mount=type=cache,target=/root/.npm npm ci
+COPY vendor ./vendor
+RUN --mount=type=cache,target=/root/.npm --mount=type=ssh npm ci
 COPY . .
 EXPOSE 3000
 CMD ["npm", "run", "dev", "--", "--hostname", "0.0.0.0", "--port", "3000"]
@@ -1104,7 +1144,7 @@ services:
       start_period: 30s
 ```
 
-`/healthz/` (in `config/views.py`) should check the things whose failure means "don't send traffic here" — a `SELECT 1` against the DB and a Redis `ping` — and return 503 if either fails. A healthcheck that only proves Python is running will happily report healthy while every request 500s. Keep it unauthenticated, excluded from throttling, and out of the Sentry transaction sample. On failure, log the real exception server-side but never put it in the response body — `db`/`redis` are unreachable-by-name errors that name the internal host (`"failed to resolve host 'db'"`), and an unauthenticated endpoint is exactly the wrong place for that; `_check_database`/`_check_cache` return the generic string `"unavailable"` once `DEBUG` is off, the same DEBUG-gated shape `tools/mixins.py`'s exception handler already uses.
+`/healthz/` (in `config/views.py`) should check the things whose failure means "don't send traffic here" — a `SELECT 1` against the DB and a Redis `ping` — and return 503 if either fails. A healthcheck that only proves Python is running will happily report healthy while every request 500s. Keep it unauthenticated, excluded from throttling, and out of the Sentry transaction sample. On failure, log the real exception server-side but never put it in the response body — `db`/`redis` are unreachable-by-name errors that name the internal host (`"failed to resolve host 'db'"`), and an unauthenticated endpoint is exactly the wrong place for that; `_check_database`/`_check_cache` return the generic string `"unavailable"` once `DEBUG` is off, the same DEBUG-gated shape `appkit.exceptions.standard_exception_handler` already uses.
 
 The prod healthcheck must also never trigger `SECURE_SSL_REDIRECT`'s 301 — `curl -f` doesn't fail on a 3xx, so an unhandled redirect would report the container healthy without the view's checks ever running. Rather than exempting `/healthz/` from the redirect at the settings level (which would make it reachable over plaintext from anywhere the path is proxied), the healthcheck itself sends `-H "X-Forwarded-Proto: https"`: `TRUST_PROXY_SSL_HEADER` already defaults `True` in prod, so this makes `request.is_secure()` true exactly the way nginx's real header will for actual traffic — no new bypass, just the same trust path every other request already uses. `backend/.env.prod.example`'s `ALLOWED_HOSTS` must include `127.0.0.1` for the same "never actually reaches the view" reason — `CommonMiddleware` enforces it on every request, healthchecks included. See §9 for why nginx itself must not proxy `/healthz/` to the public internet regardless.
 
