@@ -1,6 +1,6 @@
 {
   "name": "myproject-frontend",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "//appkitVendorTodo": "TODO(appkit): the \"appkit\" dependency below points at a vendored tarball, not a git install — that's a workaround for a confirmed appkit packaging bug (see frontend/vendor/README.md), not the normal way to install an app package. Remove this key and re-pin appkit to a real git dependency once appkit ships an installable frontend half.",

@@ -1,6 +1,6 @@
 [project]
 name = "myproject"
-version = "0.1.0"
+version = "1.0.0"
 requires-python = ">=3.14"           # a HOST may pin tightly; app packages must not (§APP 1.1)
 
 dependencies = [
