@@ -83,8 +83,18 @@ EXPOSE 8000
 # --proxy-headers matters because prod binds 127.0.0.1 behind nginx; without it every
 # client IP in the logs is the proxy's.
 #
+# No --forwarded-allow-ips here, on purpose: uvicorn's own click CLI reads it from
+# $UVICORN_FORWARDED_ALLOW_IPS natively (auto_envvar_prefix="UVICORN"), same mechanism as
+# --workers/$UVICORN_WORKERS above. docker-compose.prod.yml sets it, defaulting to Docker's
+# own bridge-network range — "*" here would make uvicorn trust the *leftmost* (client-
+# controlled) X-Forwarded-For entry, not nginx's appended one (verified directly against
+# uvicorn's installed ProxyHeadersMiddleware: `_TrustedHosts.always_trust` short-circuits
+# to `x_forwarded_for_hosts[0]`), making REMOTE_ADDR spoofable end-to-end. See
+# appkit.net.client_ip and REST_FRAMEWORK["NUM_PROXIES"] in config/settings.py for the two
+# other places this same proxy-hop count has to agree — BASE-DESIGN.md §4.2.
+#
 # Pin the base image by digest (python:3.14-slim@sha256:...) in a real project and let
 # Renovate bump it — reproducibility is the whole point of this image.
 CMD ["uvicorn", "config.asgi:application", \
      "--host", "0.0.0.0", "--port", "8000", \
-     "--proxy-headers", "--forwarded-allow-ips", "*"]
+     "--proxy-headers"]
