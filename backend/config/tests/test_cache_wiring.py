@@ -1,6 +1,11 @@
+"""Confirms `appkit.cache` behaves as this host expects, exercised the way `core/`/`config/`
+code actually calls it — see BASE-DESIGN.md §3. Ported from the scaffold's own former
+`tools/tests/test_cache.py`, which tested the local copy this module replaced.
+"""
+
 import uuid
 
-from tools import cache
+from appkit import cache
 
 
 def _unique_namespace() -> str:
@@ -42,6 +47,10 @@ def test_build_cache_key_differs_across_parts() -> None:
 
 
 def test_long_or_unsafe_parts_are_hashed_not_embedded_raw() -> None:
+    # appkit's `_SAFE_PART` deliberately drops `:` from the safe-character set the scaffold's
+    # own former `tools/cache.py` used (its own comment flags the deviation) — this string
+    # doesn't contain one, so the assertion holds either way; recorded here since a `:`-only
+    # part would now hash where the scaffold's old copy embedded it raw.
     namespace = _unique_namespace()
     unsafe = "weird key/with spaces?and=stuff&" * 3
     key = cache.build_cache_key(namespace, unsafe)
