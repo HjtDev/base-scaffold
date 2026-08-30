@@ -8,8 +8,7 @@
     "dockerfile",
     "docker-compose",
     "github-actions",
-    "pre-commit",
-    "custom.regex"
+    "pre-commit"
   ],
   "pre-commit": {
     "enabled": true
@@ -26,18 +25,6 @@
       "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
       "groupName": "weekly dependency updates",
       "extends": ["schedule:weekly"]
-    }
-  ],
-  "customManagers": [
-    {
-      "customType": "regex",
-      "description": "Track git+https://github.com/<org>/<app>@vX.Y.Z app-package refs in backend/pyproject.toml — INTEGRATION-GUIDE.md §2. None installed in this scaffold yet; this is the hook that makes a future one bump automatically.",
-      "fileMatch": ["^backend/pyproject\\.toml$"],
-      "matchStrings": [
-        "git\\+https://github\\.com/(?<depName>[^/]+/[^.]+)\\.git@(?<currentValue>v[0-9.]+)#subdirectory=backend"
-      ],
-      "datasourceTemplate": "github-tags",
-      "versioningTemplate": "semver"
     }
   ]
 }

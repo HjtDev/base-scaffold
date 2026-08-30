@@ -15,7 +15,7 @@
  * accident. `frontend/.env.example` is the only file allowed to hardcode that URL.
  */
 
-import { apiErrorFromEnvelope, ApiError, type HttpClient } from "appkit";
+import { apiErrorFromEnvelope, ApiError, type HttpClient } from "@hjtdev/appkit";
 
 const REQUEST_ID_HEADER = "X-Request-ID";
 const CSRF_COOKIE_NAME = "csrftoken";
@@ -23,8 +23,8 @@ const CSRF_HEADER_NAME = "X-CSRFToken";
 const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 // Re-exported so host pages keep one import site (`@/lib/api-client`) for both the client
-// and the error type it throws, rather than reaching into `appkit` directly for one and
-// this module for the other.
+// and the error type it throws, rather than reaching into `@hjtdev/appkit` directly for
+// one and this module for the other.
 export { ApiError };
 
 function readCookie(name: string): string | null {

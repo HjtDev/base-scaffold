@@ -87,7 +87,7 @@ EXPOSE 8000
 # uvicorn's installed ProxyHeadersMiddleware: `_TrustedHosts.always_trust` short-circuits
 # to `x_forwarded_for_hosts[0]`), making REMOTE_ADDR spoofable end-to-end. See
 # appkit.net.client_ip and REST_FRAMEWORK["NUM_PROXIES"] in config/settings.py for the two
-# other places this same proxy-hop count has to agree — BASE-DESIGN.md §4.2.
+# other places this same proxy-hop count has to agree — BASE-DESIGN.md §3.
 #
 # Pin the base image by digest (python:3.14-slim@sha256:...) in a real project and let
 # Renovate bump it — reproducibility is the whole point of this image.

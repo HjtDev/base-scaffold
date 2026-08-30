@@ -72,7 +72,7 @@ services:
       # stack's own network. Narrow this to nginx's exact address for a tighter bound, or
       # widen it if nginx runs on a custom, non-default Docker network. Keep this,
       # REST_FRAMEWORK["NUM_PROXIES"], and APPKIT["TRUSTED_PROXY_COUNT"] (both in
-      # config/settings.py) in agreement — BASE-DESIGN.md §4.2.
+      # config/settings.py) in agreement — BASE-DESIGN.md §3.
       UVICORN_FORWARDED_ALLOW_IPS: ${UVICORN_FORWARDED_ALLOW_IPS:-172.16.0.0/12}
     # Source is baked into the image — NO bind mount (§8.2). media is the one exception:
     # without a volume, every deploy's container recreate would destroy all user uploads.

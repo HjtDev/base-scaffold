@@ -3,8 +3,8 @@
 # `FERNET_KEY` are generated fresh inside the backend-tests job rather than read from
 # `secrets.*`, on purpose: a value committed to this repo (even in a workflow file) is a
 # value someone eventually copies into a real `.env`, and this scaffold is copied into every
-# future project. All app packages (appkit included) are public repositories, so a git+https
-# ref needs no credential at all to clone.
+# future project. All app packages (appkit included) publish to a public registry (PyPI/npm),
+# so installing or auditing any of them needs no credential at all.
 name: CI
 on:
   push: { branches: [main] }
@@ -189,25 +189,23 @@ jobs:
         # integrity of the resolved set is already uv's job, not pip-audit's; this job only
         # needs versions to check against the vulnerability database.
         #
-        # `uvx --python "$(cat ../.python-version)"` — without it, uv runs the pip-audit
-        # *tool itself* under whatever system Python is already on the runner's PATH (Ubuntu
-        # 24.04's default is 3.12), not the project's pinned 3.14. pip-audit's own internal
-        # `pip install --dry-run` (needed to resolve appkit's git ref to a version, since
-        # that can't be read statically from a VCS URL) inherits that same interpreter —
-        # confirmed empirically — so it fails outright against appkit's own
-        # `requires-python = ">=3.13"` before a single dependency is actually audited.
-        # Reading the version from the root .python-version, not hardcoding "3.14", keeps
-        # this the same single source of truth CLAUDE.md's pinned-versions table requires.
+        # --strict: every dependency in this project, appkit included, is now a real PyPI
+        # package pip-audit's vulnerability service can look up — confirmed empirically
+        # (`uvx pip-audit --no-deps --strict -r <export>` exits 0, "No known vulnerabilities
+        # found", against the real hjtdev-appkit dependency).
         #
-        # No --strict: appkit is a git dependency, not a PyPI package, and pip-audit's PyPI
-        # vulnerability service has no CVE data for it under any circumstance — `--strict`
-        # would turn that permanent, structural gap into a permanent job failure. Without
-        # it, pip-audit still audits every dependency it CAN resolve against PyPI and lists
-        # appkit as an explicit, visible skip ("Dependency not found on PyPI") rather than
-        # hiding the gap — confirmed empirically that every other pinned dependency still
-        # gets checked.
+        # `uvx --python "$(cat ../.python-version)"` is still required, though: `uvx` builds
+        # pip-audit's own ephemeral tool environment independently of any project context, so
+        # it does NOT walk up to this repo's `.python-version` the way `uv run`/`uv sync` do —
+        # it falls back to whatever `python3` is first on the runner's PATH. Confirmed by a
+        # real CI failure reintroducing this: GitHub's Ubuntu runner defaults to 3.12, and
+        # pip-audit's internal `pip install --dry-run --report` (which needs to actually
+        # resolve hjtdev-appkit's `requires-python = ">=3.13"`) fails outright under it before
+        # a single dependency is audited. A local rerun of the bare command can pass even
+        # without this flag if the local machine's own default `python3` happens to already be
+        # ≥3.13 — that's an environment coincidence, not proof the pin is unnecessary.
         run: |
-          uvx --python "$(cat ../.python-version)" pip-audit --no-deps \
+          uvx --python "$(cat ../.python-version)" pip-audit --no-deps --strict \
             -r <(uv export --locked --no-default-groups --no-hashes --format requirements-txt)
         shell: bash
         working-directory: backend

@@ -3,7 +3,6 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "//appkitVendorTodo": "TODO(appkit): the \"appkit\" dependency below points at a vendored tarball, not a git install — that's a workaround for a confirmed appkit packaging bug (see frontend/vendor/README.md), not the normal way to install an app package. Remove this key and re-pin appkit to a real git dependency once appkit ships an installable frontend half.",
   "engines": {
     "node": ">=24"
   },
@@ -17,8 +16,8 @@
     "test": "vitest"
   },
   "dependencies": {
+    "@hjtdev/appkit": "^2.0.1",
     "@tanstack/react-query": "^5.62.0",
-    "appkit": "file:vendor/appkit-1.0.0.tgz",
     "next": "^16.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

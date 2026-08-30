@@ -49,11 +49,9 @@ python3 -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).de
 # (PROJECT_NAME lives in the root .env, not backend/.env — step 3 already set it there.)
 
 # 5. Python + Node dependencies
-# `uv sync` pulls HjtDev/appkit (app package #1, a dependency of this scaffold from day
-# one) from a public repo — no credential needed. The frontend half needs no live git
-# fetch either today — it installs from the committed frontend/vendor/appkit-1.0.0.tgz;
-# see that directory's README.md for why (a confirmed appkit packaging defect), and for
-# how to re-pin once it's fixed.
+# `uv sync` pulls hjtdev-appkit (app package #1, a dependency of this scaffold from day
+# one) from PyPI, and `npm ci` pulls @hjtdev/appkit from npm — both public registries,
+# no credential needed for either half.
 cd backend && uv sync --locked && cd ..    # --locked proves pyproject.toml and uv.lock agree
 cd frontend && npm ci && cd ..
 
@@ -121,17 +119,20 @@ backend just because that's the half that makes the server run. Full protocol, i
 in `docs/INTEGRATION-GUIDE.md` §2; the shape:
 
 ```bash
-# backend half, pinned to a release tag
+# backend half — every app package in this ecosystem publishes to PyPI
 cd backend
-uv add "git+https://github.com/yourorg/notifications-app.git@v1.4.2#subdirectory=backend"
+uv add "notifications-app>=1.4,<2.0"
 
-# frontend half, at the SAME tag — a mismatched pair is the #1 cause of
-# "the hook returns undefined for a field the API clearly sends". Note ::path:, not
-# :frontend — the single-colon form silently installs the wrong package (confirmed against
-# npm-package-arg); verify the install actually resolved before trusting it.
+# frontend half, at a matching version — a mismatched pair is the #1 cause of
+# "the hook returns undefined for a field the API clearly sends"
 cd ../frontend
-npm install "github:yourorg/notifications-app#v1.4.2::path:frontend"
+npm install @yourorg/notifications-app@1.4.2
 ```
+
+Pinning an unreleased commit instead of a tagged release needs the git+subdirectory form
+(backend) or a verified `github:org/pkg#vX:frontend` install (frontend, which has the same
+tag/subdirectory-dropping failure mode `appkit` itself hit at v1.0.0 — verify with `npm ls`
+before trusting it) — see `docs/INTEGRATION-GUIDE.md` §2 for both fallbacks.
 
 Then: copy the config block from the app's own `README.md` into `backend/config/settings.py`
 verbatim, add its `.env` keys, mount its URLs, add it to the `banned-api` ruff table, mount
@@ -148,7 +149,7 @@ common reason "I installed the package but it's not there."
 | `backend/core/` | The mediator layer: `signals.py`, `services/`, `views/` — the *only* place allowed to import more than one installed app package at once |
 | `backend/tools/` | Host-owned helpers for `config/`/`core/`, never importable by an app package — `crypto.py` only; caching/error-envelope/request-ID helpers moved to `appkit` |
 | `backend/templates/` | Override point for an installed app's templates |
-| `frontend/lib/` | `api-client.ts` — the host's `HttpClient` implementation every installed SDK plugs into via appkit's `ApiClientProvider` |
+| `frontend/lib/` | `api-client.ts` — the host's `HttpClient` implementation every installed SDK plugs into via `@hjtdev/appkit`'s `ApiClientProvider` |
 | `frontend/app/` | Pages/components — where cross-app UI composition happens |
 
 ## Environment
