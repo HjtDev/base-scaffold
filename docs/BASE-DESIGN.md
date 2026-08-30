@@ -817,8 +817,19 @@ jobs:
         # integrity of the resolved set is already uv's job, not pip-audit's; this job only
         # needs versions to check against the vulnerability database.
         #
+        # `uvx --python "$(cat ../.python-version)"` is still required: `uvx` builds
+        # pip-audit's own ephemeral tool environment independently of any project context, so
+        # it does NOT walk up to this repo's `.python-version` the way `uv run`/`uv sync` do —
+        # it falls back to whatever `python3` is first on the runner's PATH. GitHub's Ubuntu
+        # runner defaults to 3.12, and pip-audit's internal `pip install --dry-run --report`
+        # (which needs to actually resolve hjtdev-appkit's `requires-python = ">=3.13"`) fails
+        # outright under it before a single dependency is audited — confirmed by a real CI
+        # failure when this pin was first dropped. A local rerun of the bare command can pass
+        # even without this flag if the local machine's own default `python3` happens to
+        # already be ≥3.13 — that's an environment coincidence, not proof the pin is
+        # unnecessary.
         run: |
-          uvx pip-audit --no-deps --strict \
+          uvx --python "$(cat ../.python-version)" pip-audit --no-deps --strict \
             -r <(uv export --locked --no-default-groups --no-hashes --format requirements-txt)
         shell: bash
         working-directory: backend

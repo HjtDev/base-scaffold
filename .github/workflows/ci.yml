@@ -192,11 +192,20 @@ jobs:
         # --strict: every dependency in this project, appkit included, is now a real PyPI
         # package pip-audit's vulnerability service can look up — confirmed empirically
         # (`uvx pip-audit --no-deps --strict -r <export>` exits 0, "No known vulnerabilities
-        # found", against the real hjtdev-appkit dependency). No pinned-Python workaround
-        # either: that was needed only while pip-audit's internal `pip install --dry-run` had
-        # to resolve a git ref, which doesn't happen against a registry package.
+        # found", against the real hjtdev-appkit dependency).
+        #
+        # `uvx --python "$(cat ../.python-version)"` is still required, though: `uvx` builds
+        # pip-audit's own ephemeral tool environment independently of any project context, so
+        # it does NOT walk up to this repo's `.python-version` the way `uv run`/`uv sync` do —
+        # it falls back to whatever `python3` is first on the runner's PATH. Confirmed by a
+        # real CI failure reintroducing this: GitHub's Ubuntu runner defaults to 3.12, and
+        # pip-audit's internal `pip install --dry-run --report` (which needs to actually
+        # resolve hjtdev-appkit's `requires-python = ">=3.13"`) fails outright under it before
+        # a single dependency is audited. A local rerun of the bare command can pass even
+        # without this flag if the local machine's own default `python3` happens to already be
+        # ≥3.13 — that's an environment coincidence, not proof the pin is unnecessary.
         run: |
-          uvx pip-audit --no-deps --strict \
+          uvx --python "$(cat ../.python-version)" pip-audit --no-deps --strict \
             -r <(uv export --locked --no-default-groups --no-hashes --format requirements-txt)
         shell: bash
         working-directory: backend
