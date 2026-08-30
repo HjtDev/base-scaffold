@@ -1,4 +1,4 @@
-import { makeQueryClient } from "appkit";
+import { makeQueryClient } from "@hjtdev/appkit";
 import { describe, expect, it } from "vitest";
 
 describe("makeQueryClient", () => {

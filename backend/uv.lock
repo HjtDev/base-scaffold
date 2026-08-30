@@ -31,23 +31,6 @@ wheels = [
 ]
 
 [[package]]
-name = "appkit"
-version = "1.0.0"
-source = { git = "https://github.com/HjtDev/appkit.git?subdirectory=backend&tag=v1.0.0#9bd889388960679a4a3d84ab84016c28c0883ed3" }
-dependencies = [
-    { name = "django" },
-    { name = "djangorestframework" },
-    { name = "jdatetime" },
-    { name = "nh3" },
-    { name = "puremagic" },
-]
-
-[package.optional-dependencies]
-crypto = [
-    { name = "cryptography" },
-]
-
-[[package]]
 name = "asgiref"
 version = "3.12.1"
 source = { registry = "https://pypi.org/simple" }
@@ -668,6 +651,27 @@ wheels = [
 ]
 
 [[package]]
+name = "hjtdev-appkit"
+version = "2.0.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "django" },
+    { name = "djangorestframework" },
+    { name = "jdatetime" },
+    { name = "nh3" },
+    { name = "puremagic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/30/4d/6f9cfa5aa5bee2d3a8fd57e4706061c45adc0a4dc5de0d26d749f813333e/hjtdev_appkit-2.0.1.tar.gz", hash = "sha256:0a97e79a623202116ab5a28e59c4c702e4ea988362dfd3d9f611523c74470e49", size = 94120, upload-time = "2026-08-30T08:32:39.788Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/50/05/143b3ddfc4575c8cac872ab76f742eb5dd4ed8289e270332b2763cbb23de/hjtdev_appkit-2.0.1-py3-none-any.whl", hash = "sha256:ee8e09866d97162e8229e08e90ad88ebcd68b7165b050de67241a0945f6379ae", size = 67761, upload-time = "2026-08-30T08:32:38.393Z" },
+]
+
+[package.optional-dependencies]
+crypto = [
+    { name = "cryptography" },
+]
+
+[[package]]
 name = "httptools"
 version = "0.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -868,7 +872,6 @@ name = "myproject"
 version = "1.0.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "appkit", extra = ["crypto"] },
     { name = "celery", extra = ["redis"] },
     { name = "cryptography" },
     { name = "django" },
@@ -877,6 +880,7 @@ dependencies = [
     { name = "django-jazzmin" },
     { name = "djangorestframework" },
     { name = "drf-spectacular" },
+    { name = "hjtdev-appkit", extra = ["crypto"] },
     { name = "psycopg", extra = ["binary"] },
     { name = "python-decouple" },
     { name = "sentry-sdk", extra = ["celery", "django"] },
@@ -906,7 +910,6 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "appkit", extras = ["crypto"], git = "https://github.com/HjtDev/appkit.git?subdirectory=backend&tag=v1.0.0" },
     { name = "celery", extras = ["redis"], specifier = ">=5.4,<6.0" },
     { name = "cryptography", specifier = ">=50,<51" },
     { name = "django", specifier = ">=6.0,<6.1" },
@@ -915,6 +918,7 @@ requires-dist = [
     { name = "django-jazzmin", specifier = ">=3.0,<4.0" },
     { name = "djangorestframework", specifier = ">=3.15,<4.0" },
     { name = "drf-spectacular", specifier = ">=0.27,<1.0" },
+    { name = "hjtdev-appkit", extras = ["crypto"], specifier = ">=2.0,<3.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4.0" },
     { name = "python-decouple", specifier = ">=3.8,<4.0" },
     { name = "sentry-sdk", extras = ["django", "celery"], specifier = ">=2.20,<3.0" },

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ApiClientProvider, makeQueryClient } from "appkit";
+import { ApiClientProvider, makeQueryClient } from "@hjtdev/appkit";
 import { QueryClientProvider } from "@tanstack/react-query";
 
 import { apiClient } from "@/lib/api-client";
