@@ -72,54 +72,61 @@ When asked to add a new app package, follow this protocol exactly, in order. Mos
 
 1. **Read the app's `README.md` first**, before installing anything. It is the source of truth for every subsequent step — settings, env keys, throttle scopes, URL paths, signal payloads. Fetch it from the app's repo at the tag you're about to install, not from `main`, since `main` may document unreleased configuration.
 
-2. **Install the backend half**, pinned to a release tag:
+2. **Install the backend half.** Every app package in this ecosystem publishes to PyPI
+   (`APP-DESIGN.md` §10.2 — the standard shape, not an exception), so a normal install is a
+   version range, same as any other dependency:
    ```bash
    cd backend
+   uv add "notifications-app>=1.4,<2.0"
+   ```
+   If the app has extras you need: `uv add "notifications-app[sms]>=1.4,<2.0"`.
+   Pinning an unreleased commit instead needs the git+subdirectory form (works because
+   `uv`/`pip` correctly implement Git's `#subdirectory=` fragment):
+   ```bash
    uv add "git+https://github.com/yourorg/notifications-app.git@v1.4.2#subdirectory=backend"
    ```
-   If the app has extras you need: `uv add "notifications-app[sms] @ git+…@v1.4.2#subdirectory=backend"`.
-   This updates `pyproject.toml` *and* `uv.lock`. Both are committed.
+   Either way this updates `pyproject.toml` *and* `uv.lock`, and both are committed. Neither
+   form needs authentication — every package in this ecosystem is public.
 
-   App package repos in this ecosystem are public, so the ref resolves with no credential —
-   in `uv sync` locally, in CI, and in a Docker build alike. See `APP-DESIGN.md` §1.2 for
-   what a fork takes on if it makes its own app-package repos private instead.
+   Every app depends on `hjtdev-appkit` (`APP-DESIGN.md` §1.1), and `uv` resolves that
+   transitively from PyPI — there's no separate `uv add hjtdev-appkit` step, and no
+   `[tool.uv.sources]` entry to add either, since appkit's backend half is published to PyPI
+   under that name (appkit's own `README.md`, "Installation — backend"). This only bites for a
+   host still on a pre-2.0 pin: appkit's changelog entries before `[2.0.0]` used the plain
+   `appkit` name and a git+subdirectory install, which still resolves for a tag already pinned
+   but is no longer how a fresh install should be written.
 
-   Every app depends on `appkit` (`APP-DESIGN.md` §1.1), and `uv` resolves that transitively —
-   there's no separate `uv add appkit` step on the backend half. The one thing to check if that
-   resolution fails: `appkit` isn't published to a package index, so the *host's* own
-   `[tool.uv.sources]` has to name where it comes from (`uv` doesn't read a transitive
-   dependency's own `[tool.uv.sources]` block, only the workspace root's):
-   ```toml
-   # host backend/pyproject.toml
-   [tool.uv.sources]
-   appkit = { git = "https://github.com/yourorg/appkit.git", tag = "v1.0.0", subdirectory = "backend" }
-   ```
-   Add this once, the first time any app is installed; bump the `tag` only when deliberately
-   upgrading `appkit` itself (§2.1). If `appkit` is later published to a private index instead,
-   this step drops out entirely — a plain `appkit>=1.0,<2.0` resolves normally.
-
-3. **Install `appkit`'s frontend half, if this is the first app being installed.** Every SDK declares `"appkit": ">=1.0.0 <2.0.0"` as a `peerDependency` (`APP-DESIGN.md` §12) rather than bundling it, for the same reason `react` and `@tanstack/react-query` are peer deps: npm can't dedupe two different `github:org/appkit#vX::path:frontend` specs into one copy, and two copies means two separate React contexts — `useApiClient` would silently return `null` in half the tree. So the host installs it once, explicitly, at the highest version any installed app's peer range requires:
+3. **Install `@hjtdev/appkit`'s frontend half from the npm registry, if this is the first app
+   being installed.** Every SDK declares `"@hjtdev/appkit": ">=2.0.0 <3.0.0"` as a
+   `peerDependency` (`APP-DESIGN.md` §12) rather than bundling it, for the same reason `react`
+   and `@tanstack/react-query` are peer deps: bundling it would give a host two separate
+   copies — two React contexts — and `useApiClient` would silently return `null` in half the
+   tree. So the host installs it once, explicitly, at the highest version any installed app's
+   peer range requires:
    ```bash
    cd frontend
-   npm install "github:yourorg/appkit#v1.2.0::path:frontend"
+   npm install @hjtdev/appkit
    ```
-   Already installed and satisfies every app's peer range? Skip this step.
+   Already installed and satisfies every app's peer range? Skip this step. This is a
+   **registry** install, unlike the app's own frontend half in step 4 below — appkit publishes
+   to npm specifically because a git subdirectory install (`github:org/pkg#vX:frontend`)
+   doesn't work in npm the way it works in `uv`: the tag and subdirectory are silently
+   dropped, or (with the `::path:` form) the entire repository root installs instead of just
+   `frontend/`. See appkit's own `README.md`, "Installation — frontend", for the full
+   explanation.
 
-   **`::path:frontend`, not `:frontend`.** appkit's own README documents the single-colon
-   form (`#vX.Y.Z:frontend`) — confirmed broken against `npm-package-arg`: it silently
-   drops both the tag and the subdirectory, installing the repo's private root package
-   instead of the versioned frontend package. `::path:` is npm's real subdirectory syntax.
-   Even with the right syntax, verify the install actually resolved
-   (`node -e "import('appkit').then(m => console.log(Object.keys(m)))"` from `frontend/`) —
-   this scaffold's own appkit v1.0.0 integration hit a second, deeper packaging defect
-   where even the corrected syntax installed the wrong tree in one tested environment; see
-   `frontend/vendor/README.md` for the full writeup and the fallback that unblocked it.
-
-4. **Install the frontend half at the same tag:**
+4. **Install the app's own frontend half**, pinned to the same tag as its backend half. Every
+   app package publishes its frontend half to npm too (same §10.2 standard, and the only
+   reliable option — see the note above):
    ```bash
-   npm install "github:yourorg/notifications-app#v1.4.2::path:frontend"
+   npm install @yourorg/notifications-app@1.4.2
    ```
-   The tags must match. A mismatched pair is the single most likely cause of "the hook returns `undefined` for a field the API clearly sends." Verify this install resolved too, the same way as step 3.
+   If an app genuinely hasn't published yet and still ships via git, be aware
+   `github:yourorg/notifications-app#v1.4.2:frontend` has the same tag/subdirectory-dropping
+   failure mode `appkit` itself hit at v1.0.0 — verify the install actually resolved the
+   tagged `frontend/` tree (`npm ls <package>` should show a version, not `main`'s) before
+   trusting it. Either way, the versions must match. A mismatched pair is the single most
+   likely cause of "the hook returns `undefined` for a field the API clearly sends."
 
 5. **Copy the configuration block from the app's `README.md`** into `backend/config/settings.py` — `INSTALLED_APPS`, `MIDDLEWARE` (if any), its `REST_FRAMEWORK['DEFAULT_THROTTLE_RATES']` entries, and its settings dict (e.g. `NOTIFICATIONS = {...}`). Copy it verbatim; do not write these from memory or infer them from the package's source. Only adapt naming if there's a real collision, and if there is, note it in `CLAUDE.md` (§8) because it becomes a permanent local deviation.
 
@@ -146,7 +153,7 @@ When asked to add a new app package, follow this protocol exactly, in order. Mos
 11. **Mount `appkit`'s shared provider**, if it isn't mounted yet, in `frontend/app/providers.tsx` — once for the whole host, not once per app — and add this app's namespace to its `basePaths` map (the SDK-to-host client contract, `APP-DESIGN.md` §12):
     ```tsx
     // frontend/app/providers.tsx
-    import { ApiClientProvider } from "appkit";
+    import { ApiClientProvider } from "@hjtdev/appkit";
     import { apiClient } from "@/lib/api-client";
 
     // ... inside the existing Providers component, nested under QueryClientProvider:
@@ -207,7 +214,7 @@ cd ../frontend && npm uninstall notifications-app
 
 Before removing the package: `python manage.py migrate notifications_app zero` to unwind its tables (irreversible — back up first). Then delete its `INSTALLED_APPS` entry, settings dict, throttle scopes, `.env` keys, URL mounts, `banned-api` line, any `core/signals.py` receivers or `core/services/` calls referencing it, any frontend imports, its entry in `CLAUDE.md`, and **its `basePaths` entry** in `frontend/app/providers.tsx` (§2 step 11) — not the `ApiClientProvider` mount itself, which every remaining app still needs. Grep for both the module name (`notifications_app`) and the package name (`notifications-app`) to catch leftovers.
 
-Don't `npm uninstall appkit` or remove `appkit`'s backend dependency as part of removing a single app — it's a shared dependency every remaining installed app still relies on. Only remove it if this was the last app installed in the project.
+Don't `npm uninstall @hjtdev/appkit` or remove `hjtdev-appkit`'s backend dependency as part of removing a single app — it's a shared dependency every remaining installed app still relies on. Only remove it if this was the last app installed in the project.
 
 ## 3. URL Routing Architecture
 
@@ -393,7 +400,7 @@ This is a normal `pytest` suite (`make test`). CI runs it (`BASE-DESIGN.md` §7)
 
 `backend/tools/` is project-owned and exists for **`config/` and `core/` code** — not for installed app packages, which can't assume a specific host's internals exist. What used to live here and be duplicated by every app (`APP-DESIGN.md` §4) now has a real home: `appkit`, a declared, versioned dependency every app depends on explicitly (`APP-DESIGN.md` §1.1). appkit's own `ApiClientProvider`/`useApiClient`/`makeQueryClient` are what an installed SDK is allowed to assume exist (`APP-DESIGN.md` §12) — `frontend/lib/query-client.ts` no longer exists as a separate host convention; the scaffold's own `frontend/app/providers.tsx` calls `makeQueryClient()` straight from `appkit`. `frontend/lib/api-client.ts` (the host's concrete `HttpClient` implementation, injected into `ApiClientProvider`) is the one thing left in `frontend/lib/` for the host's own pages and components to share.
 
-- `tools/crypto.py` — wraps the project's `FERNET_KEY` for field-level encryption in project-owned models: `from tools.crypto import encrypt, decrypt`. Internally a thin wrapper over `appkit.crypto.Cipher` (requires the `crypto` extra — `appkit[crypto]`) built from `FERNET_KEY`; appkit's `Cipher` itself reads no setting or env var of its own, by design. If an *app* needs encryption internally, that's the app's own concern with its own documented `.env` key and its own `Cipher` — never the host's `tools.crypto`.
+- `tools/crypto.py` — wraps the project's `FERNET_KEY` for field-level encryption in project-owned models: `from tools.crypto import encrypt, decrypt`. Internally a thin wrapper over `appkit.crypto.Cipher` (requires the `crypto` extra — `hjtdev-appkit[crypto]`) built from `FERNET_KEY`; appkit's `Cipher` itself reads no setting or env var of its own, by design. If an *app* needs encryption internally, that's the app's own concern with its own documented `.env` key and its own `Cipher` — never the host's `tools.crypto`.
 - `appkit.cache` / `appkit.mixins` — the caching helpers and `CachedListMixin`, shared with every installed app rather than duplicated per app or reimplemented in `tools/`.
 - `appkit.exceptions` — the error-envelope handler, wired as `REST_FRAMEWORK["EXCEPTION_HANDLER"]`.
 - `appkit.request_id` — the request-ID `ContextVar`, middleware, and logging filter; `config/logging.py`'s `build_logging_config()` imports the filter from here.

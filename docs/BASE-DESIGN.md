@@ -88,10 +88,8 @@ my-client-project/
 │   ├── lib/
 │   │   └── api-client.ts            # shared fetcher: base URL, credentials, appkit's
 │   │                                  HttpClient/envelope helpers — see §3. makeQueryClient
-│   │                                  itself now comes straight from appkit (no local copy)
-│   ├── vendor/                      # [temporary — see vendor/README.md] appkit's frontend
-│   │                                  half, packed from source; not the documented install
-│   │                                  path — a confirmed appkit packaging defect blocks it
+│   │                                  itself now comes straight from @hjtdev/appkit (no
+│   │                                  local copy)
 │   ├── tests/                       # vitest — at least one real test per lib/ module
 │   └── public/
 └── backend/
@@ -183,7 +181,11 @@ Two additions to the tree worth explaining:
 
   **Naming-collision note.** `backend/tools/` (host-owned, never importable by an app package) and `appkit` (shared, always importable by an app package — and explicitly exempt from the `banned-api` rule that keeps other app packages out of `core/`/`config/`, `INTEGRATION-GUIDE.md` §2 step 10) are adjacent concepts with opposite rules — the exact kind of thing that's easy to get backwards under time pressure. The package is named `appkit`, not `tools-app`, specifically so the import line makes the ownership obvious at a glance: `from tools.crypto import encrypt` (host-only) reads nothing like `from appkit.cache import build_cache_key` (shared), where a name like `tools_app` would sit one character from `tools` in a tree where the two have opposite ownership rules.
 
-  **Three settings describe the same physical proxy-hop count and must be changed together**: `APPKIT["TRUSTED_PROXY_COUNT"]` and `REST_FRAMEWORK["NUM_PROXIES"]` in `config/settings.py`, and `UVICORN_FORWARDED_ALLOW_IPS` in `docker-compose.prod.yml`. `appkit.net.client_ip` reads the first; DRF's own `SimpleRateThrottle.get_ident()` (used by `ScopedRateThrottle`) reads the second — appkit's `client_ip` can't be injected into DRF's throttle ident logic, so this has to be set independently, or a throttled view keys off the client's own spoofable leftmost `X-Forwarded-For` entry instead of the trusted, proxy-appended one; uvicorn's `--proxy-headers` reads the third to decide which hosts it trusts to set `X-Forwarded-For`/`X-Forwarded-Proto` at all. Nothing currently checks that these three agree — a host that adds a CDN in front of nginx and updates only one silently gets a spoofable throttle bucket or a wrong `client_ip`, with no error anywhere. This is a reported appkit defect (a proposed `appkit.W006` system check); until it exists, this paragraph is the only thing enforcing the link.
+  **Three settings describe the same physical proxy-hop count and must be changed together**: `APPKIT["TRUSTED_PROXY_COUNT"]` and `REST_FRAMEWORK["NUM_PROXIES"]` in `config/settings.py`, and `UVICORN_FORWARDED_ALLOW_IPS` in `docker-compose.prod.yml`. `appkit.net.client_ip` reads the first; DRF's own `SimpleRateThrottle.get_ident()` (used by `ScopedRateThrottle`) reads the second — appkit's `client_ip` can't be injected into DRF's throttle ident logic, so this has to be set independently, or a throttled view keys off the client's own spoofable leftmost `X-Forwarded-For` entry instead of the trusted, proxy-appended one; uvicorn's `--proxy-headers` reads the third to decide which hosts it trusts to set `X-Forwarded-For`/`X-Forwarded-Proto` at all.
+
+  `appkit.W006` (a real Django system check as of appkit 2.x, run by `manage.py check`) fires on two independent conditions: `NUM_PROXIES` set and disagreeing with `TRUSTED_PROXY_COUNT`, or `NUM_PROXIES` left unset (`None`, whether omitted or explicit) while any `SimpleRateThrottle` subclass is configured — not only `ScopedRateThrottle`; the spoofable-bucket flaw lives in `SimpleRateThrottle.get_ident()` itself, so `AnonRateThrottle`, `UserRateThrottle`, and any host-defined subclass inherit it unchanged, and the check triggers on all of them, whether wired globally via `DEFAULT_THROTTLE_CLASSES` or on any view reachable by walking `ROOT_URLCONF`. Two scoping gaps, both deliberate rather than an oversight: a subclass that overrides `get_ident()` itself is excluded (its own parsing may already be safe, and warning about it would be a false positive this check can't resolve without re-implementing that subclass's logic), and a throttle wired up via `get_throttles()` overridden at runtime, or a permission class doing its own rate limiting outside DRF's throttle machinery entirely, is invisible to it — **a clean `appkit.W006` run is not proof neither exists somewhere.**
+
+  What W006 can't see at all: `UVICORN_FORWARDED_ALLOW_IPS`, a Compose/uvicorn-level env var invisible to Django's own check framework. A host that adds a CDN in front of nginx and updates only that third setting still silently gets a spoofable throttle bucket or a wrong `client_ip`, with no error anywhere — this paragraph is the only thing enforcing that one.
 - **Frontend baseline** — Next.js App Router (TypeScript, `strict`) with `@tanstack/react-query` and a shared API client already set up in `frontend/lib/`, so an installed frontend app-package's hooks have a consistent client to plug into out of the box instead of every app package bootstrapping its own.
 - **Analytics (optional)** — self-hosted [Umami](https://umami.is), `umami` + its own `umami-db` Postgres instance, behind the dev-only `analytics` compose profile (§8.2), same pattern as the `tooling` profile's `flower`/`mailpit`. Off by default: a plain `docker compose up` never starts it, and with `NEXT_PUBLIC_UMAMI_WEBSITE_ID` unset `frontend/app/layout.tsx` renders no script tag. `NEXT_PUBLIC_UMAMI_SCRIPT_URL`/`NEXT_PUBLIC_UMAMI_WEBSITE_ID` are frontend build ARGs, same build-time-only caveat as `NEXT_PUBLIC_API_URL` (§8.1). See `README.md`'s "Analytics (optional)" section for enabling it and the admin-password warning — Umami's default `admin`/`umami` login cannot be overridden by env.
 
@@ -287,7 +289,7 @@ token storage.
 
 One tool, one lockfile, one install command — in local dev, in Docker, in CI, and on the production server. `requirements.txt` does not exist in this scaffold. The reasons this matters more here than in a typical project:
 
-- Installed app packages come from `git+https://…@vX.Y.Z#subdirectory=backend` refs. `uv.lock` resolves those to exact commit hashes, so "we're on v1.4.2" means the same bytes everywhere. A `requirements.txt` line pointing at a tag does not guarantee that — a tag can be moved.
+- Installed app packages resolve from PyPI/npm version ranges (`INTEGRATION-GUIDE.md` §2). `uv.lock`/`package-lock.json` pin those to an exact resolved version and hash, so "we're on v1.4.2" means the same bytes everywhere. A `requirements.txt` line with no lockfile does not guarantee that.
 - All apps resolve into **one shared environment** (see `APP-DESIGN.md` §1.1). A real resolver that fails loudly on a conflict is worth a great deal compared to `pip`'s first-wins-then-breaks-at-runtime behavior.
 - Dependency groups (PEP 735) keep test/lint tooling out of production images with a single `--no-default-groups` flag, instead of a second requirements file that drifts. (Not `--no-dev` — see §4.2's note on why that flag alone is not enough.)
 
@@ -312,7 +314,7 @@ dependencies = [
     "python-decouple>=3.8,<4.0",
     "whitenoise>=6.8,<7.0",
     "uvicorn[standard]>=0.34,<1.0",
-    # Deliberately redundant with appkit[crypto]'s own `cryptography` dependency below:
+    # Deliberately redundant with hjtdev-appkit[crypto]'s own `cryptography` dependency below:
     # tools/crypto.py wraps appkit.crypto.Cipher rather than importing `cryptography`
     # directly, but FERNET_KEY is a first-class, always-required env var (config/settings.py)
     # and shouldn't depend on an app's extras selection to keep working.
@@ -320,7 +322,7 @@ dependencies = [
     "structlog>=25,<26",
     "sentry-sdk[django,celery]>=2.20,<3.0",
     # ---- installed app packages get appended here by `uv add`, one line each
-    "appkit[crypto]>=1.0,<2.0",
+    "hjtdev-appkit[crypto]>=2.0,<3.0",
 ]
 
 [dependency-groups]
@@ -354,21 +356,15 @@ meant to be the production image. `backend/Dockerfile.prod`'s builder stage uses
 the list. See §8.1 for the Dockerfile block.
 
 ```toml
-[tool.uv.sources]
-# appkit isn't published to a package index — this is the one-time wiring every host needs
-# the first time ANY app package is installed (appkit resolves transitively), not repeated
-# per app after that. Bump the tag only when deliberately upgrading appkit itself — see
-# INTEGRATION-GUIDE.md §2.1.
-appkit = { git = "https://github.com/{{ORG}}/appkit.git", tag = "v1.0.0", subdirectory = "backend" }
-
 # Uncomment ONE of these blocks while developing an app package against this project.
-# Swap it back to the pinned git ref before committing — see INTEGRATION-GUIDE.md §7.
+# Swap it back out before committing — see INTEGRATION-GUIDE.md §7.
+# [tool.uv.sources]
 # notifications-app = { path = "../notifications-app/backend", editable = true }
 ```
 
-Ruff, mypy, pytest and coverage config live in this same file — see §5. The commented local-checkout block under `[tool.uv.sources]` is load-bearing documentation: it's the sanctioned way to point a host at a local app checkout, and having it present-but-commented is what stops someone inventing a worse method.
+Ruff, mypy, pytest and coverage config live in this same file — see §5. The commented local-checkout block is load-bearing documentation: it's the sanctioned way to point a host at a local app checkout, and having it present-but-commented is what stops someone inventing a worse method. There is no `[tool.uv.sources]` entry for `appkit` itself — `hjtdev-appkit` is published to PyPI, so it resolves transitively like any other dependency (`INTEGRATION-GUIDE.md` §2).
 
-**Extras: this scaffold takes `appkit[crypto]`, not `appkit[images]`.** The scaffold ships `FERNET_KEY` and `tools/crypto.py` — exactly the case the `crypto` extra exists for (`appkit.crypto.Cipher`/`generate_key`). It accepts no file uploads of its own, so `appkit.files.validate_image`'s raster-format checks (the `images` extra) have nothing to validate here; an app that accepts uploads declares `appkit[images]` itself.
+**Extras: this scaffold takes `hjtdev-appkit[crypto]`, not `hjtdev-appkit[images]`.** The scaffold ships `FERNET_KEY` and `tools/crypto.py` — exactly the case the `crypto` extra exists for (`appkit.crypto.Cipher`/`generate_key`). It accepts no file uploads of its own, so `appkit.files.validate_image`'s raster-format checks (the `images` extra) have nothing to validate here; an app that accepts uploads declares `appkit[images]` itself.
 
 ### 4.3 Settings & environment
 
@@ -635,7 +631,7 @@ The host project's CI is smaller than an app package's — it doesn't build whee
 # fork PR) goes green on the first push. SECRET_KEY and FERNET_KEY are generated fresh
 # inside backend-tests rather than read from secrets.*: a value committed to this repo, even
 # in a workflow file, is a value someone eventually copies into a real .env, and this
-# scaffold is copied into every future project. App package repos (APP-DESIGN.md §1.2) are
+# scaffold is copied into every future project. App package repos are
 # public, so installing one never needs a secret either.
 name: CI
 on:
@@ -821,25 +817,8 @@ jobs:
         # integrity of the resolved set is already uv's job, not pip-audit's; this job only
         # needs versions to check against the vulnerability database.
         #
-        # `uvx --python "$(cat ../.python-version)"` — without it, uv runs the pip-audit
-        # *tool itself* under whatever system Python is already on the runner's PATH (Ubuntu
-        # 24.04's default is 3.12), not the project's pinned 3.14. pip-audit's own internal
-        # `pip install --dry-run` (needed to resolve appkit's git ref to a version, since
-        # that can't be read statically from a VCS URL) inherits that same interpreter —
-        # confirmed empirically — so it fails outright against appkit's own
-        # `requires-python = ">=3.13"` before a single dependency is actually audited.
-        # Reading the version from the root .python-version, not hardcoding "3.14", keeps
-        # this the same single source of truth CLAUDE.md's pinned-versions table requires.
-        #
-        # No --strict: appkit is a git dependency, not a PyPI package, and pip-audit's PyPI
-        # vulnerability service has no CVE data for it under any circumstance — --strict
-        # would turn that permanent, structural gap into a permanent job failure. Without
-        # it, pip-audit still audits every dependency it CAN resolve against PyPI and lists
-        # appkit as an explicit, visible skip ("Dependency not found on PyPI") rather than
-        # hiding the gap — confirmed empirically that every other pinned dependency still
-        # gets checked.
         run: |
-          uvx --python "$(cat ../.python-version)" pip-audit --no-deps \
+          uvx pip-audit --no-deps --strict \
             -r <(uv export --locked --no-default-groups --no-hashes --format requirements-txt)
         shell: bash
         working-directory: backend
@@ -961,7 +940,7 @@ CMD ["uvicorn", "config.asgi:application", \
 ```
 
 Notes on the deliberate choices:
-- **`git` is installed in the builder only** — it's needed to resolve the `git+https://…` app package refs (public repos still need `git` to clone, just no credential — see `APP-DESIGN.md` §1.2), and it has no business being in the runtime image.
+- **`git` is installed in the builder only** — every app package publishes to a registry now, so `uv sync` normally never needs it, but the git+subdirectory form documented as the unreleased-commit fallback (`INTEGRATION-GUIDE.md` §2) still resolves through it, and it has no business being in the runtime image.
 - **No migrate on boot.** See §9 for why that's a deploy-script step.
 - **`--proxy-headers`** matters because prod binds to `127.0.0.1` behind nginx; without it every client IP in your logs is the proxy's. Its companion, `--forwarded-allow-ips`, is deliberately NOT baked into this image — see the CMD comment above and §3.
 - **Base image digests are pinned automatically**, not as a manual step: `renovate.json` sets `pinDigests: true`, so Renovate opens a PR converting `python:3.14-slim` (and every other base image in the repo — both frontend Dockerfiles, `ghcr.io/astral-sh/uv:0.11`, the compose service images) to `python:3.14-slim@sha256:…` shortly after this workflow first runs, and keeps the digest current from then on. Reproducibility is the whole point of the prod image; a floating tag quietly undermines it. The trade-off — a base image only gets security patches via a Renovate PR, not silently on rebuild — is acceptable only because Renovate is actually running; a project that disables it should drop the digest pins too, or it sits on a frozen image indefinitely.
@@ -1002,10 +981,6 @@ Dev stays single-stage on purpose: with the source bind-mounted, a builder stage
 FROM node:24-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
-# vendor/ before npm ci: a package.json "file:./vendor/..." dependency (appkit's frontend
-# half, currently — see frontend/vendor/README.md) must exist in the build context before
-# npm resolves it.
-COPY vendor ./vendor
 RUN --mount=type=cache,target=/root/.npm npm ci
 
 FROM node:24-alpine AS builder
@@ -1042,7 +1017,6 @@ FROM node:24-alpine
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY package.json package-lock.json ./
-COPY vendor ./vendor
 RUN --mount=type=cache,target=/root/.npm npm ci
 COPY . .
 EXPOSE 3000
@@ -1513,7 +1487,7 @@ Once there are more than a handful of app packages, "what already exists that I 
 ```markdown
 | App | Latest | Purpose | Notes |
 |---|---|---|---|
-| `appkit` | v1.0.0 | Shared cache/mixin/error-envelope helpers + the frontend HttpClient/provider | Every other app depends on this — not itself an installable feature |
+| `appkit` | v2.0.1 | Shared cache/mixin/error-envelope helpers + the frontend HttpClient/provider | Every other app depends on this — not itself an installable feature |
 | `auth-app` | v3.1.0 | JWT auth, registration, password reset | Every project needs this first |
 | `notifications-app` | v1.4.2 | Email/SMS/push delivery + templates | Extras: `[sms]`, `[push]` |
 | `payments-app` | v2.1.0 | Stripe charges, refunds, webhooks | Requires `notifications-app` wiring in `core/` |

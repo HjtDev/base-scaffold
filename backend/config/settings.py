@@ -146,7 +146,7 @@ REST_FRAMEWORK = {
     # spoofable leftmost X-Forwarded-For entry instead of the trusted, proxy-appended one.
     # This, TRUSTED_PROXY_COUNT below, and UVICORN_FORWARDED_ALLOW_IPS
     # (docker-compose.prod.yml) all describe the same physical proxy-hop count and must be
-    # changed together — see BASE-DESIGN.md §4.2.
+    # changed together — see BASE-DESIGN.md §3.
     "NUM_PROXIES": 1,
 }
 
