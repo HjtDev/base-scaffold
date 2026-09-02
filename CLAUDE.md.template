@@ -21,6 +21,12 @@ wires them together.
 **Read `docs/INTEGRATION-GUIDE.md` in full before any task that installs an app, touches
 `core/`, or crosses two apps.** This file is the fast reference for everything else.
 
+`docs/INTEGRATION-GUIDE.md` (and `docs/APP-DESIGN.md`/`docs/BASE-DESIGN.md`, if present) are
+symlinks into a sibling `../ecosystem-docs` checkout (`make docs-link`), shared read-only source
+of truth across every project that uses this scaffold — not something this project edits. If
+`../ecosystem-docs` doesn't exist yet, clone it: {{APP_REGISTRY_URL}}. This project is otherwise
+fully independent of `base-scaffold` from here on (`README.md`'s "Quick start").
+
 ## The one rule that matters most
 
 Anything under `backend/.venv`/`site-packages` or `frontend/node_modules` is **READ-ONLY**.

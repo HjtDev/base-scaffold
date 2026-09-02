@@ -36,48 +36,58 @@ rm -rf .git && git init
 # 3. Name the project (drives container names, DB name, and CLAUDE.md's header)
 ./scripts/rename-project.sh my-client-project     # see docs/BASE-DESIGN.md §11
 
-# 4. Environment
+# 4. Link the shared design docs (optional, recommended) — docs/APP-DESIGN.md,
+# docs/BASE-DESIGN.md, docs/INTEGRATION-GUIDE.md, docs/CLAUDE-CODE-GUIDE-APP.md, and
+# docs/CLAUDE-CODE-GUIDE-BASE.md aren't tracked in this repo at all; they're symlinked from a
+# sibling clone of the shared docs repo instead of copy-pasted. Skip this and those five paths
+# simply don't exist yet — nothing else below depends on them, but CLAUDE.md does once you
+# start installing app packages.
+cd .. && git clone https://github.com/yourorg/ecosystem-docs.git && cd my-client-project
+make docs-link
+
+# 5. Environment
 cp .env.example .env
 cp backend/.env.example backend/.env
 cp frontend/.env.example frontend/.env.local
 python3 -c "import secrets; print(secrets.token_urlsafe(64))"                              # SECRET_KEY
 python3 -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"   # FERNET_KEY
-# stdlib only — cryptography isn't installed until step 5, and its own Fernet.generate_key()
+# stdlib only — cryptography isn't installed until step 6, and its own Fernet.generate_key()
 # output is byte-for-byte the same shape as this (32 random bytes, urlsafe-base64), so either
 # is a valid key; this form just works before `uv sync` has run.
 # paste both into backend/.env, then fill in the DB creds below them.
 # (PROJECT_NAME lives in the root .env, not backend/.env — step 3 already set it there.)
 
-# 5. Python + Node dependencies
+# 6. Python + Node dependencies
 # `uv sync` pulls hjtdev-appkit (app package #1, a dependency of this scaffold from day
 # one) from PyPI, and `npm ci` pulls @hjtdev/appkit from npm — both public registries,
 # no credential needed for either half.
 cd backend && uv sync --locked && cd ..    # --locked proves pyproject.toml and uv.lock agree
 cd frontend && npm ci && cd ..
 
-# 6. Hooks
+# 7. Hooks
 uv run --directory backend pre-commit install
 
-# 7. Bring the stack up
+# 8. Bring the stack up
 docker compose up --build
 
-# 8. First superuser
+# 9. First superuser
 docker compose exec backend python manage.py createsuperuser
 
-# 9. Sanity check — visit each in a browser (`open` is macOS-only; Linux: `xdg-open`)
+# 10. Sanity check — visit each in a browser (`open` is macOS-only; Linux: `xdg-open`)
 http://localhost:8000/healthz/            # 200
 http://localhost:8000/api/schema/swagger-ui/
 http://localhost:3000
 
-# 10. Commit — a fresh clone has no tags yet (step 2 deleted .git), so there's no real
+# 11. Commit — a fresh clone has no tags yet (step 2 deleted .git), so there's no real
 # version to put in place of vX.Y.Z; either drop that part or fill in the scaffold
 # version/commit you actually cloned from.
 git add . && git commit -m "chore: initial commit from base-scaffold"
 ```
 
-Steps 5–6 are `make install`; step 7 is `make up`; `make check` is the definition of done from
-here on (`docs/BASE-DESIGN.md` §10.2) — the explicit steps above are what those targets
-actually run, spelled out once for a first read.
+Step 4 is `make docs-link` (run it again any time; it's idempotent — see `ecosystem-docs`'s own
+README for the pattern). Steps 6–7 are `make install`; step 8 is `make up`; `make check` is the
+definition of done from here on (`docs/BASE-DESIGN.md` §10.2) — the explicit steps above are
+what those targets actually run, spelled out once for a first read.
 
 At this point the project is fully independent. Installing a reusable app package (both
 halves) follows the protocol below and in `docs/INTEGRATION-GUIDE.md` §2, and there's no
@@ -220,7 +230,7 @@ boot the prod images on a dev machine before ever touching a real server:
 docker compose down                              # dev and prod share container ports/names —
 cp .env.prod.example .env.prod                   # stop dev first
 cp backend/.env.prod.example backend/.env.prod
-# fill in both — same generators as step 4, plus real DB creds and EMAIL_HOST
+# fill in both — same generators as step 5, plus real DB creds and EMAIL_HOST
 docker compose -f docker-compose.prod.yml --env-file .env.prod build --pull
 docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --remove-orphans
 docker compose -f docker-compose.prod.yml --env-file .env.prod exec backend python manage.py migrate
