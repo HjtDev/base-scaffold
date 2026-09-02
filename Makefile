@@ -37,7 +37,7 @@
 # gate: run it after touching pyproject.toml/uv.lock or package.json/package-lock.json.
 .DEFAULT_GOAL := help
 .PHONY: help install up down stop ps logs shell migrate migrations superuser backup restore \
-        analytics lint fmt typecheck django-checks test test-fast build check deploy
+        analytics lint fmt typecheck django-checks test test-fast build check deploy docs-link
 
 help:  ## Show this help
 	@grep -E '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | awk -F':.*?## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -46,7 +46,7 @@ install:       ## uv sync --locked + npm ci + install pre-commit hooks
 	cd backend && uv sync --locked
 	cd frontend && npm ci
 	uv run --directory backend pre-commit install
-	test -f backend/.env || echo "NOTE: backend/.env doesn't exist yet — see README.md step 4."
+	test -f backend/.env || echo "NOTE: backend/.env doesn't exist yet — see README.md step 5."
 
 up:            ## Start the dev stack
 	docker compose up --build
@@ -156,3 +156,28 @@ build:         ## Production frontend build — proves the Next.js build itself 
 check: lint typecheck django-checks test build  ## Everything CI gates on, locally — the definition of done (see map above)
 deploy:        ## Deploy to production (pass flags via ARGS, e.g. make deploy ARGS=--follow)
 	./deploy/deploy-prod.sh $(ARGS)
+
+# Symlinks the five design docs shared across every project in this ecosystem — APP-DESIGN.md,
+# BASE-DESIGN.md, INTEGRATION-GUIDE.md, CLAUDE-CODE-GUIDE-APP.md, CLAUDE-CODE-GUIDE-BASE.md —
+# from a sibling checkout of HjtDev/ecosystem-docs, instead of holding a local copy of each.
+# Idempotent; safe to re-run. See ecosystem-docs/README.md and this repo's own CLAUDE.md.
+SHARED_DOCS = APP-DESIGN.md BASE-DESIGN.md INTEGRATION-GUIDE.md CLAUDE-CODE-GUIDE-APP.md \
+	CLAUDE-CODE-GUIDE-BASE.md
+
+docs-link:     ## Symlink the shared design docs from a sibling ../ecosystem-docs checkout
+	@test -d ../ecosystem-docs || { \
+		echo "../ecosystem-docs not found — clone it as a sibling of this repo first:" >&2; \
+		echo "  cd .. && git clone https://github.com/HjtDev/ecosystem-docs.git" >&2; \
+		exit 1; \
+	}
+	@for f in $(SHARED_DOCS); do \
+		rm -f docs/$$f; \
+		ln -s ../../ecosystem-docs/$$f docs/$$f; \
+	done
+	@for f in $(SHARED_DOCS); do \
+		test -e docs/$$f || { \
+			echo "docs/$$f is a broken symlink — expected ../ecosystem-docs/$$f to exist" >&2; \
+			exit 1; \
+		}; \
+	done
+	@echo "Linked $(words $(SHARED_DOCS)) shared docs from ../ecosystem-docs/ (all resolve)"

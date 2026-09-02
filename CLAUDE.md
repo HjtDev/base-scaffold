@@ -13,6 +13,13 @@ consult them whenever a decision here constrains them.
 When this repo and the spec disagree, the spec wins — unless you believe the spec is wrong,
 in which case **stop and say so** rather than silently implementing something better.
 
+**Shared docs live in `HjtDev/ecosystem-docs`, not here.** `docs/APP-DESIGN.md`,
+`docs/BASE-DESIGN.md`, `docs/INTEGRATION-GUIDE.md`, `docs/CLAUDE-CODE-GUIDE-APP.md`, and
+`docs/CLAUDE-CODE-GUIDE-BASE.md` are symlinks into a sibling `../ecosystem-docs` checkout
+(`make docs-link`) — the same five files shared with `appkit` and every app package. **Edit them
+there, never here.** This convention also gets rendered into `CLAUDE.md.template` — see its own
+copy of this note — so a fresh host project inherits it too.
+
 ## Pinned versions & defaults
 
 These are the concrete decisions behind this scaffold — cite this table instead of
